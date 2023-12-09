@@ -1,5 +1,4 @@
 import dataclasses
-import datetime
 
 
 def field_description(field: dataclasses.Field):

@@ -71,7 +71,6 @@ class Recipe(DataclassIterableMixin):
 
         return self
 
-    id: uuid.UUID = field(metadata="PRIMARY KEY", default_factory=uuid.uuid4, init=False)
     document: Document
     ingredients: list[str] = field(default_factory=list)
     directions: list[str] = field(default_factory=list)
@@ -83,12 +82,13 @@ class Recipe(DataclassIterableMixin):
     prep_time: timedelta = None
     total_time: timedelta = None
     recipeYield: str = None
+    id: uuid.UUID = field(metadata="PRIMARY KEY", default_factory=uuid.uuid4)
 
     def format_directions(self):
         return "\n".join(f"{idx + 1}. {i}" for idx, i in enumerate(self.directions))
 
     def format_nutrition(self):
-        raise NotImplementedError()
+        return "\n".join(f"{i}: {j}" for i, j in self.nutrition.items())
 
     def __repr__(self):
         return f"""Ingredients:

@@ -3,6 +3,7 @@ import datetime
 import json
 import sqlite3
 import uuid
+from typing import Any, Generator
 
 from db_utils import field_description, DataclassIterableMixin
 from model import Document, Recipe
@@ -52,6 +53,7 @@ class SQLitePipeline:
         with self.connection:
             self.connection.execute(insert, item)
 
-    def fetchall(self, query: str):
+    def select(self, query: str, *args, **kwargs) -> Generator[dict[str, Any], None, None]:
         with self.connection:
-            return self.connection.execute(query).fetchall()
+            for i in self.connection.execute(query, *args, **kwargs):
+                yield i

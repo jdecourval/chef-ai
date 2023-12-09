@@ -1,5 +1,3 @@
-import asyncio
-import itertools
 import os
 from contextlib import nullcontext
 from io import StringIO
@@ -10,7 +8,6 @@ import anyio
 from aiohttp import ClientSession, ClientTimeout
 from anyio import run, create_task_group
 from anyio.abc import TaskGroup
-from lxml import etree
 from lxml.html import parse
 
 ENTRIES_PER_SEARCH_PAGE = 24
