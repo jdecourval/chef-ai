@@ -2,7 +2,6 @@ import dataclasses
 import datetime
 import json
 import sqlite3
-import uuid
 from typing import Any, Generator
 
 from db_utils import field_description, DataclassIterableMixin
@@ -14,14 +13,12 @@ class SQLitePipeline:
         sqlite3.enable_callback_tracebacks(True)
         sqlite3.register_adapter(dict, json.dumps)
         sqlite3.register_adapter(list, json.dumps)
-        sqlite3.register_adapter(uuid.UUID, lambda x: x.bytes)
         sqlite3.register_adapter(datetime.timedelta, lambda x: x.seconds)
-        sqlite3.register_adapter(Document, lambda x: x.id.bytes)  # TODO: Make generic
+        sqlite3.register_adapter(Document, lambda x: x.id)  # TODO: Make generic
 
         # Register the adapter and converter
         sqlite3.register_converter("dict", json.loads)
         sqlite3.register_converter("list", json.loads)
-        sqlite3.register_converter("UUID", lambda x: uuid.UUID(bytes=x))
         sqlite3.register_converter("timedelta", lambda x: datetime.timedelta(seconds=int(x)))
 
         def dict_factory(cursor, row):
@@ -44,14 +41,17 @@ class SQLitePipeline:
         self.connection.execute(f"CREATE TABLE IF NOT EXISTS {dc.__name__}({fields})")
 
     def process_item(self, item: DataclassIterableMixin):
-        insert = "INSERT INTO {} ({}) VALUES ({})".format(
+        primary_key = item.primary_key().name
+        insert = "INSERT INTO {} ({}) VALUES ({}) RETURNING {}".format(
             type(item).__name__,
             ','.join(item.fields_name()),
             ','.join(item.placeholders()),
+            item.primary_key().name
         )
 
         with self.connection:
-            self.connection.execute(insert, item)
+            result = self.connection.execute(insert, item)
+            setattr(item, primary_key, result.fetchone()[primary_key])
 
     def select(self, query: str, *args, **kwargs) -> Generator[dict[str, Any], None, None]:
         with self.connection:

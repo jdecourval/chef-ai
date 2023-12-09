@@ -1,6 +1,5 @@
 import contextlib
 import json
-import uuid
 from dataclasses import field, dataclass
 from datetime import timedelta
 from html import unescape
@@ -37,7 +36,7 @@ class Document(DataclassIterableMixin):
     text: str
     author: str
     subtitle: str = None
-    id: uuid.UUID = field(metadata="PRIMARY KEY", default_factory=uuid.uuid4)
+    id: int = field(metadata="PRIMARY KEY", default=None)
 
 
 @dataclass
@@ -46,7 +45,6 @@ class Recipe(DataclassIterableMixin):
     def from_document(document: Document):
         self = Recipe(document=document)
         self.document = document
-        self.id = uuid.uuid4()
 
         with contextlib.suppress(KeyError):
             self.review_score = float(document.json["aggregateRating"]["ratingValue"])
@@ -82,7 +80,7 @@ class Recipe(DataclassIterableMixin):
     prep_time: timedelta = None
     total_time: timedelta = None
     recipeYield: str = None
-    id: uuid.UUID = field(metadata="PRIMARY KEY", default_factory=uuid.uuid4)
+    id: int = field(metadata="PRIMARY KEY", default=None)
 
     def format_ingredients(self):
         return "\n".join(self.ingredients)
