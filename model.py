@@ -59,9 +59,9 @@ class Recipe(DataclassIterableMixin):
         with contextlib.suppress(KeyError):
             self.nutrition = {i: unescape(j) for i, j in document.json["nutrition"].items() if i != "@type"}
         with contextlib.suppress(KeyError):
-            self.category = unescape(document.json["recipeCategory"])
+            self.category = [unescape(i) for i in document.json["recipeCategory"]]
         with contextlib.suppress(KeyError):
-            self.cuisine = unescape(document.json["recipeCuisine"])
+            self.cuisine = [unescape(i) for i in document.json["recipeCuisine"]]
         with contextlib.suppress(KeyError, TypeError):
             self.prep_time = isodate.parse_duration(document.json["prepTime"])
         with contextlib.suppress(KeyError, TypeError):
@@ -77,12 +77,15 @@ class Recipe(DataclassIterableMixin):
     nutrition: dict[str, str] = field(default_factory=dict)
     review_score: float = None  # /5
     review_count: int = None
-    category: str = None
-    cuisine: str = None
+    category: list[str] = field(default_factory=list)
+    cuisine: list[str] = field(default_factory=list)
     prep_time: timedelta = None
     total_time: timedelta = None
     recipeYield: str = None
     id: uuid.UUID = field(metadata="PRIMARY KEY", default_factory=uuid.uuid4)
+
+    def format_ingredients(self):
+        return "\n".join(self.ingredients)
 
     def format_directions(self):
         return "\n".join(f"{idx + 1}. {i}" for idx, i in enumerate(self.directions))
@@ -92,7 +95,8 @@ class Recipe(DataclassIterableMixin):
 
     def __repr__(self):
         return f"""Ingredients:
-{self.ingredients}
+{self.format_ingredients()}
+
 Instructions:
 {self.format_directions()}
 """
