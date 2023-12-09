@@ -1,7 +1,5 @@
 import dataclasses
 import datetime
-import typing
-import uuid
 
 
 def field_description(field: dataclasses.Field):
@@ -22,20 +20,9 @@ def field_type(field: dataclasses.Field):
         return "INTEGER"
     if field.type is str:
         return "TEXT"
-    if field.type is datetime.timedelta:
-        return "INTEGER"
-    if field.type is datetime.datetime:
-        return "DATETIME"
-    if field.type is uuid.UUID:
-        return "BLOB"
-    if field.type is dict or typing.get_origin(field.type) is dict:
-        return "JSON"
-    if typing.get_origin(field.type) is list:
-        return "JSON"
     if issubclass(field.type, DataclassIterableMixin):
         return f"{field_type(field.type.primary_key())} REFERENCES {field.type.__name__}({field.type.primary_key().name})"
-
-    assert False
+    return field.type.__name__  # TODO: Check that the type has been registered.
 
 
 def field_nullable(field: dataclasses.Field):

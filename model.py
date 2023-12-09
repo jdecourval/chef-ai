@@ -1,3 +1,4 @@
+import contextlib
 import json
 import uuid
 from dataclasses import field, dataclass
@@ -12,19 +13,23 @@ from db_utils import DataclassIterableMixin
 
 @dataclass
 class Document(DataclassIterableMixin):
-    def __init__(self, html):
+    @staticmethod
+    def from_html(html):
         selector = Selector(html)
-        self.id = uuid.uuid4()
-        self.json = json.loads(selector.css("script#schema-lifestyle_1-0::text").get(), strict=False)[0]
-        self.html_fragment = selector.css("article .text-passage").get()
-        self.title = unescape(self.json["headline"])
-        self.text = unescape("".join(selector.css("article .text-passage p.comp::text").getall()).strip())
-        self.subtitle = unescape(selector.xpath('//meta[@name="description"]/@content').get())
-        self.author = unescape(self.json["author"][0]["name"])
-        self.recipe = Recipe(self) if self.json["@type"][0] == "Recipe" else None
-        assert self.text, "Empty document"
+        metadata = json.loads(selector.css("script#schema-lifestyle_1-0::text").get(), strict=False)[0]
 
-    id: uuid.UUID = field(metadata="PRIMARY KEY")
+        self = Document(
+            json=metadata,
+            html_fragment=selector.css("article .text-passage").get(),
+            title=unescape(metadata["headline"]),
+            text=unescape("".join(selector.css("article .text-passage p.comp::text").getall()).strip()),
+            subtitle=unescape(selector.xpath('//meta[@name="description"]/@content').get()),
+            author=unescape(metadata["author"][0]["name"]),
+        )
+        self.recipe = Recipe.from_document(self) if metadata["@type"][0] == "Recipe" else None
+        assert self.text, "Empty document"
+        return self
+
     json: dict = field(repr=False)  # jsonb.
     html_fragment: str = field(
         repr=False)  # article tag. So that an AI can interpret HTML as additional context (e.g. subtitles).
@@ -32,60 +37,45 @@ class Document(DataclassIterableMixin):
     text: str
     author: str
     subtitle: str = None
+    id: uuid.UUID = field(metadata="PRIMARY KEY", default_factory=uuid.uuid4)
 
 
 @dataclass
 class Recipe(DataclassIterableMixin):
-    def __init__(self, document: Document):
+    @staticmethod
+    def from_document(document: Document):
+        self = Recipe(document=document)
         self.document = document
         self.id = uuid.uuid4()
 
-        try:
+        with contextlib.suppress(KeyError):
             self.review_score = float(document.json["aggregateRating"]["ratingValue"])
-        except:
-            pass
-        try:
+        with contextlib.suppress(KeyError):
             self.review_count = int(document.json["aggregateRating"]["ratingCount"])
-        except:
-            pass
-        try:
+        with contextlib.suppress(KeyError):
             self.ingredients = unescape(document.json["recipeIngredient"])
-        except:
-            self.ingredients = []
-        try:
+        with contextlib.suppress(KeyError):
             self.directions = [unescape(i["text"]) for i in document.json["recipeInstructions"]]
-        except:
-            self.directions = []
-        try:
+        with contextlib.suppress(KeyError):
             self.nutrition = {i: unescape(j) for i, j in document.json["nutrition"].items() if i != "@type"}
-        except:
-            self.nutrition = {}
-        try:
+        with contextlib.suppress(KeyError):
             self.category = unescape(document.json["recipeCategory"])
-        except:
-            pass
-        try:
+        with contextlib.suppress(KeyError):
             self.cuisine = unescape(document.json["recipeCuisine"])
-        except:
-            pass
-        try:
-            self.prep_time = isodate.parse_duration(document.json["prepTime"]) if "prepTime" in document.json else None
-        except:
-            pass
-        try:
+        with contextlib.suppress(KeyError, TypeError):
+            self.prep_time = isodate.parse_duration(document.json["prepTime"])
+        with contextlib.suppress(KeyError, TypeError):
             self.total_time = isodate.parse_duration(document.json["totalTime"])
-        except:
-            pass
-        try:
+        with contextlib.suppress(KeyError):
             self.recipeYield = unescape(document.json["recipeYield"])
-        except:
-            pass
 
-    id: uuid.UUID = field(metadata="PRIMARY KEY")
+        return self
+
+    id: uuid.UUID = field(metadata="PRIMARY KEY", default_factory=uuid.uuid4, init=False)
     document: Document
-    ingredients: list[str]
-    directions: list[str]
-    nutrition: dict[str, str]
+    ingredients: list[str] = field(default_factory=list)
+    directions: list[str] = field(default_factory=list)
+    nutrition: dict[str, str] = field(default_factory=dict)
     review_score: float = None  # /5
     review_count: int = None
     category: str = None

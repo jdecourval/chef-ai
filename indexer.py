@@ -27,7 +27,7 @@ def insert_db(document: Document):
 
 def index_html(html):
     try:
-        document = Document(html)
+        document = Document.from_html(html)
     except json.decoder.JSONDecodeError as e:
         # Sometimes, there's a " not properly escaped that causes parsing to fail.
         if "Expecting ',' delimiter" not in e.msg:
