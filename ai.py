@@ -201,7 +201,7 @@ class SummarizingTrainer(Trainer):
     def _build_conversation(self, question: str, summary: str) -> list[dict[str, str]]:
         return [{"role": "system", "content": self.SYSTEM_PROMPT},
                 {"role": "user", "content": question},
-                {"role": "system", "content": summary}]
+                {"role": "assistant", "content": summary}]
 
     def _process_document(self, doc: Document) -> list[dict[str, str]] | None:
         self._chat.append({
