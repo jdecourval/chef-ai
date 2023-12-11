@@ -55,5 +55,6 @@ class SQLitePipeline:
 
     def select(self, query: str, *args, **kwargs) -> Generator[dict[str, Any], None, None]:
         with self.connection:
+            # Does this risk leaving the cursor open if the iterator is not fully iterated?
             for i in self.connection.execute(query, *args, **kwargs):
                 yield i

@@ -1,9 +1,12 @@
 import abc
 import argparse
 import json
+import re
+from contextlib import contextmanager
 from typing import override, Generator
 
 import humanize
+import tqdm
 from llama_cpp import Llama, LlamaGrammar
 
 from db import SQLitePipeline
@@ -35,25 +38,36 @@ class Trainer:
     SYSTEM_PROMPT = ("You are an helpful assistant. Below is an instruction that describes a task. "
                      "Write a response that appropriately completes the request.")
     CHAT_DEFAULTS = {"max_tokens": 200, "temperature": 0}
-    GRAMMAR_YES_NO = LlamaGrammar.from_string('root ::= "yes" | "no"')
+    GRAMMAR_YES_NO = LlamaGrammar.from_string('root ::= "yes" | "no"', verbose=False)
 
     def __init__(self, llm: Llama, sql: SQLitePipeline):
         self._llm = llm
         self._sql = sql
+        self._chatlog = []
         self._reset()
 
-    def _reset(self):
-        self._chat = [{"role": "system", "content": self.SYSTEM_PROMPT}]
+    @contextmanager
+    def chat_scope(self):
+        backup = self._chatlog.copy()
+        yield
+        self._chatlog = backup  # TODO: Use a stack and keep track of the old height.
 
-    def _prompt(self, p: str, **kwargs):
-        self._chat.append({
-            "role": "user",
-            "content": p
-        })
+    def _reset(self):
+        self._chatlog = [{"role": "system", "content": self.SYSTEM_PROMPT}]
+
+    def _prompt(self, prompt: str, **kwargs):
+        return self._llm.create_chat_completion([
+            {"role": "system", "content": self.SYSTEM_PROMPT},
+            {"role": "user", "content": prompt}
+        ], **{**self.CHAT_DEFAULTS, **kwargs})['choices'][0]['message']['content']
+
+    def _chat(self, prompt: str, **kwargs):
+        self._chatlog.append({"role": "user", "content": prompt})
         try:
-            message = llm.create_chat_completion(self._chat, **{**self.CHAT_DEFAULTS, **kwargs})['choices'][0]['message']
+            message = llm.create_chat_completion(self._chatlog, **{**self.CHAT_DEFAULTS, **kwargs})['choices'][0][
+                'message']
             # print(message['content'])
-            self._chat.append(message)
+            self._chatlog.append(message)
             return message['content']
         except ValueError:
             # Prompt is too large
@@ -67,6 +81,15 @@ class Trainer:
     def __iter__(self) -> Generator[list[dict[str, str]], None, None]:
         pass
 
+    def _all_recipes(self):
+        # A join would be much faster, but good enough for now.
+        recipes = [Recipe(**i) for i in self._sql.select("SELECT * FROM Recipe")]
+        for recipe, document in zip(recipes, self._sql.select(
+                f"SELECT * FROM Document WHERE id IN ({",".join('?' * len(recipes))})",
+                [j.document for j in recipes])):
+            recipe.document = Document(**document)
+            yield recipe
+
 
 class RecipeEvaluatorTrainer(Trainer):
     MIN_REVIEWS = 10
@@ -75,40 +98,49 @@ class RecipeEvaluatorTrainer(Trainer):
 
     @override
     def __iter__(self) -> Generator[list[dict[str, str]], None, None]:
-        # TODO: If too much memory or latency, do it element per element, or async.
-        recipes = [Recipe(**i) for i in self._sql.select("SELECT * FROM Recipe")]
-        for recipe, document in zip(recipes, self._sql.select(
-                f"SELECT * FROM Document WHERE id IN ({",".join('?' * len(recipes))})",
-                [j.document for j in recipes])):
-            recipe.document = Document(**document)
-        for recipe in recipes:
-            # TODO: Add marker between conversations
-            yield self._process_document(recipe)
+        for recipe in self._all_recipes():
+            for conversation in self._process_document(recipe):
+                yield conversation
             self._reset()
 
-    def _process_document(self, recipe: Recipe) -> list[dict[str, str]] | None:
-        if recipe.review_count is None or recipe.review_score is None:
-            return None
+    def _process_document(self, recipe: Recipe) -> Generator[list[dict[str, str]], None, None]:
+        if recipe.review_count < self.MIN_REVIEWS:
+            return
 
-        doc = recipe.document
         conversation = [{
-            "role": "user",
-            "content": "Starting after the line break is a RECIPE by a food magazine.\n\n" + doc.text
+            "role": "user",  # TODO: Try using system here.
+            "content": f"Starting after the line break is a recipe by a food magazine.\n\n{recipe}"
         }]
+        self._chatlog += conversation
 
-        if recipe.review_count > self.MIN_REVIEWS:
-            if recipe.review_score > self.VERY_GOOD_SCORE_THRESHOLD:
-                conversation += self._q_and_q_messages("Does this recipe actually looks good?",
-                                                       f"Yes, very good. I'll give it {recipe.review_score}/5")
-            elif recipe.review_score < self.BAD_SCORE_THRESHOLD:
-                conversation += self._q_and_q_messages("Does this recipe actually looks good?",
-                                                       f"No, not really. I'll give it {recipe.review_score}/5")
-            else:
-                conversation += self._q_and_q_messages("Does this recipe actually looks good?",
-                                                       f"It can be good. I'll give it {recipe.review_score}/5")
+        critic = ""
+        with self.chat_scope():
+            self._chatlog.append({
+                "role": "user",
+                "content": f"Starting after the line break are reviews for the recipe.\n\n{recipe.format_reviews()}"
+            })
+            # TODO: This sort of phrasing basically just applies if the recipe is not close to perfect.
+            if self._chat("Is there a concensus amongs the reviews that the recipe could be improved in some way?",
+                          grammar=self.GRAMMAR_YES_NO) == "no":
+                print("no concensus among the reviews")
+                critic = self._chat("Write a paragraph that suggest how to improve this recipe."
+                                    "Write your response using the recipe as the subject of your sentences. ")
+                # "State the reviewers' conclusions as fact, don't quote them.")
 
-        # TODO: Summarize all the reviews, and append to the response.
-        return conversation
+            # Alternative idea:
+            # self._chat(f"Describe why the recipe should get a score of {recipe.review_score}/5")
+
+        if recipe.review_score > self.VERY_GOOD_SCORE_THRESHOLD:
+            conversation += self._q_and_q_messages("Does this recipe actually look good?",
+                                                   f"Yes, very good. I'll give it {recipe.review_score}/5\n\n" + critic)
+        elif recipe.review_score < self.BAD_SCORE_THRESHOLD:
+            conversation += self._q_and_q_messages("Does this recipe actually look good?",
+                                                   f"No, not really. I'll give it {recipe.review_score}/5\n\n" + critic)
+        else:
+            conversation += self._q_and_q_messages("Does this recipe actually look good?",
+                                                   f"It can be good. I'll give it {recipe.review_score}/5\n\n" + critic)
+
+        yield conversation
 
 
 class RecipeTrainer(Trainer):
@@ -116,64 +148,68 @@ class RecipeTrainer(Trainer):
 
     @override
     def __iter__(self) -> Generator[list[dict[str, str]], None, None]:
-        # TODO: If too much memory or latency, do it element per element, or async.
-        recipes = [Recipe(**i) for i in self._sql.select("SELECT * FROM Recipe")]
-        for recipe, document in zip(recipes, self._sql.select(
-                f"SELECT * FROM Document WHERE id IN ({",".join('?' * len(recipes))})",
-                [j.document for j in recipes])):  # Generators are not support by sqlite
-            recipe.document = Document(**document)
-        for recipe in recipes:
+        for recipe in self._all_recipes():
             for conversation in self._process_document(recipe):
-                # TODO: Add marker between conversations
                 yield conversation
             self._reset()
 
-    def _process_document(self, recipe: Recipe) -> list[dict[str, str]] | None:
+    def _process_document(self, recipe: Recipe) -> Generator[list[dict[str, str]], None, None]:
         if recipe.review_score is None or recipe.review_score < self.MIN_SCORE:
             return
 
         doc = recipe.document
-        self._chat.append({
-            "role": "user",
+        self._chatlog.append({
+            "role": "system",
             "content": "Starting after the line break is a RECIPE by a food magazine.\n\n" + doc.text
         })
 
-        # TODO: Reset point. Use context manager?
+        secrets = []
+        with self.chat_scope():
+            # Maybe redundant with SummarizingTrainer? Probably different enough.
+            answer = self._chat(
+                "Is there a secret, a key technique, or a special ingredient to this recipe that contributes to its success?")
+            if self._chat("Is that common knowledge, or obvious to most people?", grammar=self.GRAMMAR_YES_NO) == "no":
+                secrets.append(answer)
 
-        # Maybe redundant with SummarizingTrainer? Probably different enough.
-        # TODO: Finish implementing
-        answer = self._prompt(
-            "Is there a secret, a key technique, or a special ingredient to this recipe that contributes to its success?")
-        if self._prompt("Is that common knowledge?", grammar=self.GRAMMAR_YES_NO) == "yes":
-            return
-        answer = self._prompt("Anything else?")
-        if self._prompt("Is that common knowledge, or obvious to most people?", grammar=self.GRAMMAR_YES_NO) == "yes":
-            return
+                for _ in range(3):
+                    answer = self._chat("Anything else?")
+                    if answer.lower().startswith("no") or self._chat(
+                            "Is that common knowledge, or obvious to most people?",
+                            grammar=self.GRAMMAR_YES_NO) == "yes":
+                        break
+                    secrets.append(answer)
+                else:
+                    print("Tried four times.")
 
-        self._reset()
-        self._chat.append({
-            "role": "user",
-            "content": "Starting after the line break is a RECIPE by a food magazine.\n\n" + doc.text
-        })
-        title = self._prompt(
-            f'The original title of the recipe is "{doc.title}".'
-            f' Considering your knowledge of the recipe, can you simplify the title to be a description, as simple as possible, of what is being cooked? Does not use the word "recipe".'
-            f' You response must only include the new title.')
-        if self._prompt("Is that new title simpler than the original title?", grammar=self.GRAMMAR_YES_NO) == "no":
+        title = self._chat(
+            f'The original title of the recipe is: "{doc.title}". '
+            f' What is being cooked in this recipe? '
+            f'Your response must be terse, only include the answer to the question and not use the word "recipe" nor any verb.',
+            max_tokens=8)
+        title = title.strip('"')  # Sometimes the response is quoted.
+        if self._chat(f'Is "{title}" a simpler title simpler than "{doc.title}"?', grammar=self.GRAMMAR_YES_NO) == "no":
             title = doc.title  # TODO: Seems useless. Measure.
 
+        question = self._prompt("Can you fix this sentence to be more grammatically correct? "
+                                "Your response must only included the fixed sentence.\n\n"
+                                f"I'd like to prepare {title} tonight. Can you propose a recipe?")
         conversation = [
-            *self._q_and_q_messages(
-                f"I'd to cook {title} tonight. Can you propose a recipe?",
-                repr(recipe)
-            ),
-            *self._q_and_q_messages(
-                "What are the nutrition facts?",
-                recipe.format_nutrition()),
-            *self._q_and_q_messages(
+            *self._q_and_q_messages(question, repr(recipe)),
+            *self._q_and_q_messages("What are the nutrition facts?", recipe.format_nutrition())
+        ]
+
+        if recipe.cuisine:
+            conversation += self._q_and_q_messages(
                 "What sort of cuisine is that?",
-                ", ".join(recipe.cuisine[:-1]) + " and " + recipe.cuisine[-1] if len(recipe.cuisine) > 1 else recipe.cuisine[0]
-            )]
+                ", ".join(recipe.cuisine[:-1]) + " and " + recipe.cuisine[-1] if len(recipe.cuisine) > 1
+                else recipe.cuisine[0]
+            )
+
+        if recipe.category:
+            conversation += self._q_and_q_messages(
+                "How would you caracterize this recipe?",
+                "As a " + ", ".join(recipe.category[:-1]) + " and " + recipe.category[-1] if len(recipe.category) > 1
+                else recipe.category[0])
 
         if recipe.prep_time or recipe.total_time:
             if recipe.prep_time and recipe.total_time:
@@ -187,6 +223,13 @@ class RecipeTrainer(Trainer):
                 time_answer
             )
 
+        if secrets:
+            conversation += self._q_and_q_messages(
+                "How can I make sure this recipe is a success?",
+                self._prompt(
+                    "Summarize, simplify, and improve the wording of the following text:\n\n" + "\n".join(secrets))
+            )
+
         yield conversation
 
 
@@ -194,8 +237,9 @@ class SummarizingTrainer(Trainer):
     @override
     def __iter__(self) -> Generator[list[dict[str, str]], None, None]:
         for document in (Document(**i) for i in self._sql.select("SELECT * FROM Document")):
-            # TODO: Add marker between conversations
-            yield self._process_document(document)
+            print(document.title)  # TODO: Remove
+            for conversation in self._process_document(document):
+                yield conversation
             self._reset()
 
     def _build_conversation(self, question: str, summary: str) -> list[dict[str, str]]:
@@ -203,63 +247,76 @@ class SummarizingTrainer(Trainer):
                 {"role": "user", "content": question},
                 {"role": "assistant", "content": summary}]
 
-    def _process_document(self, doc: Document) -> list[dict[str, str]] | None:
-        self._chat.append({
-            "role": "user",
+    def _process_document(self, doc: Document) -> Generator[list[dict[str, str]], None, None]:
+        self._chatlog.append({
+            "role": "user",  # Using system breaks the next prompt.
             "content": "Starting after the line break is an ARTICLE by a food magazine.\n\n" + doc.text
         })
 
-        question = self._prompt("What QUESTION could that ARTICLE helps answer? "
-                                "Respond only with the QUESTION which must end with a question mark(?).")
+        with self.chat_scope():
+            if self._chat(
+                    "Does the ARTICLE talks of anecdotes, does it tell a story, or is it about culinary knowledge? Your "
+                    "answer must be one word: 'anecdotes', 'story' or 'knowledge'.",
+                    grammar=LlamaGrammar.from_string('root ::= "anecdotes" | "story" | "knowledge"', verbose=False)
+            ) in ["anecdotes", "story"]:
+                return
 
-        if self._prompt(
-                "Does the ARTICLE talks of anecdotes, does it tell a story, or is it about culinary knowledge? Your "
-                "answer must be one word: 'anecdotes', 'story' or 'knowledge'.",
-                grammar=LlamaGrammar.from_string(
-                    'root ::= "anecdotes" | "story" | "knowledge"')) in ["anecdotes", "story"]:
-            return None
+        # TODO: Alternative idea: Ask all questions at the same time.
+        questions = []
+        with self.chat_scope():
+            question = self._chat("Is there a cooking related QUESTION that this article would answer? "
+                                  'Respond only with the QUESTION which must end with a question mark(?). '
+                                  'Avoid using the words: "article" and "author".')
 
-        worth_it = self._prompt(
-            "Would that be useful to train the answer to that QUESTION to an AI specialized in cooking and food in "
-            "general? Consider that the AI has a limited memory, therefore, training articles based on anecdotes or "
-            "stories must be avoided. Don't try to compromize.",
-            grammar=self.GRAMMAR_YES_NO) == "yes"
-        if not worth_it:
-            return
+            while not question.lower().startswith("no") and self._chat(
+                    "Would that be useful to train the answer to this QUESTION to an AI specialized in cooking and food in "
+                    "general? Consider that the AI has a limited memory, therefore, training articles based on anecdotes or "
+                    "stories must be avoided. Don't try to compromize.",
+                    grammar=self.GRAMMAR_YES_NO) == "yes":
+                # TODO: Compare embeddings before adding to the list.
+                if not re.search("article|author", question, flags=re.IGNORECASE):
+                    questions.append(question)
+                if len(questions) == 4:
+                    print("Too many questions")
+                    break
+                question = self._chat(
+                    'Is there another cooking related QUESTION that this article would answer? '
+                    'Respond only with the QUESTION which must end with a question mark(?), or with "no" if you can\'t think of any new original question. '
+                    'Respond with "no" if your question is similar to a previous one. '
+                    'Your response MUST NOT use the words: "article" nor "author"')
 
-        self._reset()
-        self._chat.append({
-            "role": "user",
-            "content": "Starting after the line break is an ARTICLE by a food magazine.\n\n" + doc.text
-        })
-        # TODO: Sometimes, the answer still refers to "the/this article", or "the/this recipe".
-        summary = self._prompt(
-            f'Answer, in your own words, not the author\'s, the question "{question}" from the ARTICLE\'s content. '
-            f'Explain step-by-step, miticulously. Respond only with your long and detailed answer. '
-            f'Elaborate in up to 600 words.',
-            max_tokens=2000)
+        for question in questions:
+            with self.chat_scope():
+                summary = self._chat(
+                    f'Answer, in your own words, not the author\'s, the question "{question}" from the ARTICLE\'s content. '
+                    f'Explain step-by-step, miticulously. Respond only with your long and detailed answer. '
+                    f'Elaborate in up to 600 words. Avoid using the words: "article" and "author".',
+                    max_tokens=2000)
 
-        return self._build_conversation(question, summary)
+                yield self._build_conversation(question, summary)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('model')
     args = parser.parse_args()
-    llm = Llama(model_path=args.model, n_gpu_layers=99, n_ctx=16*1024, chat_format="chatml", verbose=False)
+    llm = Llama(model_path=args.model, n_gpu_layers=99, n_ctx=16 * 1024, chat_format="chatml", verbose=False)
     sql = SQLitePipeline()
 
+    recipe_count = next(sql.select("SELECT count(1) as c FROM Recipe"))["c"]
+    document_count = next(sql.select("SELECT count(1) as c FROM Document"))["c"]
+
     with open("recipes.jsonl", "w") as file:
-        for i in RecipeTrainer(llm, sql):
-            print(i)
-            json.dump(i, file, ensure_ascii=False)
+        for training in tqdm.tqdm(RecipeTrainer(llm, sql), total=recipe_count):  # This assumption may not remain true.
+            file.write("<s>")
+            json.dump(training, file, ensure_ascii=False)
 
     with open("reviews.jsonl", "w") as file:
-        for i in RecipeEvaluatorTrainer(llm, sql):
-            print(i)
-            json.dump(i, file, ensure_ascii=False)
+        for training in tqdm.tqdm(RecipeEvaluatorTrainer(llm, sql), total=recipe_count):
+            file.write("<s>")
+            json.dump(training, file, ensure_ascii=False)
 
     with open("summaries.jsonl", "w") as file:
-        for i in SummarizingTrainer(llm, sql):
-            print(i)
-            json.dump(i, file, ensure_ascii=False)
+        for training in tqdm.tqdm(SummarizingTrainer(llm, sql), total=document_count):
+            file.write("<s>")
+            json.dump(training, file, ensure_ascii=False)
