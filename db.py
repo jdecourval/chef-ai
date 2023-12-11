@@ -5,7 +5,7 @@ import sqlite3
 from typing import Any, Generator
 
 from db_utils import field_description, DataclassIterableMixin
-from model import Document, Recipe
+from model import Document, Recipe, Training
 
 
 class SQLitePipeline:
@@ -35,12 +35,13 @@ class SQLitePipeline:
         with self.connection:
             self._create_table_from_dataclass(Document)  # TODO: Move out of here to make generic.
             self._create_table_from_dataclass(Recipe)
+            self._create_table_from_dataclass(Training)
 
     def _create_table_from_dataclass(self, dc: type):
         fields = ','.join([field_description(field) for field in dataclasses.fields(dc)])
         self.connection.execute(f"CREATE TABLE IF NOT EXISTS {dc.__name__}({fields})")
 
-    def process_item(self, item: DataclassIterableMixin):
+    def insert(self, item: DataclassIterableMixin):
         primary_key = item.primary_key().name
         insert = "INSERT INTO {} ({}) VALUES ({}) RETURNING {}".format(
             type(item).__name__,

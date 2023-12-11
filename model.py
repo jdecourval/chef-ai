@@ -1,10 +1,12 @@
 import contextlib
+import enum
 import json
 from dataclasses import field, dataclass
 from datetime import timedelta
 from html import unescape
 
 import isodate
+import numpy as np
 from parsel import Selector
 
 from db_utils import DataclassIterableMixin
@@ -12,8 +14,9 @@ from db_utils import DataclassIterableMixin
 
 @dataclass
 class Document(DataclassIterableMixin):
+    # TODO: Move somewhere else
     @staticmethod
-    def from_html(html):
+    def from_html(html: str):
         selector = Selector(html)
         metadata = json.loads(selector.css("script#schema-lifestyle_1-0::text").get(), strict=False)[0]
 
@@ -36,6 +39,7 @@ class Document(DataclassIterableMixin):
 
 @dataclass
 class Recipe(DataclassIterableMixin):
+    # TODO: Move somewhere else
     @staticmethod
     def build(document: Document, metadata: dict):
         self = Recipe(document=document)
@@ -99,3 +103,20 @@ class Recipe(DataclassIterableMixin):
 Instructions:
 {self.format_directions()}
 """
+
+
+@dataclass
+class Training(DataclassIterableMixin):
+    class Role(enum.IntEnum):
+        system = 1
+        user = 2
+        assistant = 3
+
+    conversation: int  # messages part of the same conversation have the same id.
+    position: int  # position in the conversation.
+    content: str
+    role: Role
+    embedding: np.ndarray  # Serialized numpy array.
+    trainer: str  # The class that generated this content.
+    source: Document = None  # The document that helped generated this content, if applicable. For bookkeeping.
+    id: int = field(metadata="PRIMARY KEY", default=None)

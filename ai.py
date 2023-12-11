@@ -1,19 +1,19 @@
 import abc
 import argparse
-import json
+import logging
 import re
 from contextlib import contextmanager
 from typing import override, Generator
 
 import humanize
-import tqdm
+import numpy as np
+from tqdm import tqdm
 from llama_cpp import Llama, LlamaGrammar
 
 from db import SQLitePipeline
-from model import Document, Recipe
+from model import Document, Recipe, Training
 
-
-# TODO: Use embeddings to remove duplicated questions (and answers?).
+# TODO: Use embeddings to remove duplicated questions (and answers?). Ask the model to generalize the knowledge?
 # TODO: Use multiple similar variations of each prompt in the training set.
 # TODO: Try this model to generate questions: https://huggingface.co/FPHam/Generate_Question_Mistral_7B
 # TODO: Generate content from charts/pictures.
@@ -21,6 +21,11 @@ from model import Document, Recipe
 # TODO: exllamav2
 # TODO: Samplers
 # TODO: CFG
+# TODO: Metrics
+
+
+_logger = logging.getLogger(__name__)
+
 
 class CategoryIngredientTrainer:
     # TODO:
@@ -62,33 +67,58 @@ class Trainer:
         ], **{**self.CHAT_DEFAULTS, **kwargs})['choices'][0]['message']['content']
 
     def _chat(self, prompt: str, **kwargs):
+        _logger.debug(f"Prompting: {prompt}")
         self._chatlog.append({"role": "user", "content": prompt})
-        try:
-            message = llm.create_chat_completion(self._chatlog, **{**self.CHAT_DEFAULTS, **kwargs})['choices'][0][
-                'message']
-            # print(message['content'])
-            self._chatlog.append(message)
-            return message['content']
-        except ValueError:
-            # Prompt is too large
-            print("Too large prompt")
+        # ValueError on prompt too large.
+        message = llm.create_chat_completion(self._chatlog, **{**self.CHAT_DEFAULTS, **kwargs})['choices'][0]['message']
+        _logger.debug(f"Prompt result: {message['content']}")
+        self._chatlog.append(message)
+        return message['content']
 
     @staticmethod
     def _q_and_q_messages(question, answer):
         return [{"role": "user", "content": question}, {"role": "assistant", "content": answer}]
 
     @abc.abstractmethod
-    def __iter__(self) -> Generator[list[dict[str, str]], None, None]:
+    def __iter__(self) -> Generator[Training, None, None]:
         pass
 
-    def _all_recipes(self):
+    def _count_table(self, table: str) -> int:
+        return next(sql.select(f"SELECT count(1) as c FROM {table}"))["c"]
+
+    def _all_recipes(self) -> Generator[Recipe, None, None]:
+        recipe_count = next(sql.select("SELECT count(1) as c FROM Recipe"))["c"]
         # A join would be much faster, but good enough for now.
         recipes = [Recipe(**i) for i in self._sql.select("SELECT * FROM Recipe")]
-        for recipe, document in zip(recipes, self._sql.select(
+        for recipe, document in tqdm(zip(recipes, self._sql.select(
                 f"SELECT * FROM Document WHERE id IN ({",".join('?' * len(recipes))})",
-                [j.document for j in recipes])):
+                [j.document for j in recipes])), total=recipe_count):
             recipe.document = Document(**document)
             yield recipe
+
+    def _all_documents(self) -> Generator[Document, None, None]:
+        document_count = next(sql.select("SELECT count(1) as c FROM Document"))["c"]
+        for document in tqdm((Document(**i) for i in self._sql.select("SELECT * FROM Document")), total=document_count):
+            yield document
+
+    def _insert_training(self, training: Training):
+        self._sql.insert(training)
+
+    def _training(self, conversation: dict[str, str], conversation_id: int, position: int,
+                  source: Document) -> Training:
+        embedding = self._llm.embed(conversation["content"])
+        return Training(conversation=conversation_id,
+                        position=position,
+                        content=conversation["content"],
+                        role=Training.Role[conversation["role"]],
+                        embedding=np.array(embedding),
+                        trainer=self.__class__.__name__,
+                        source=source
+                        )
+
+    def start(self):
+        for i in self:
+            self._sql.insert(i)
 
 
 class RecipeEvaluatorTrainer(Trainer):
@@ -97,21 +127,30 @@ class RecipeEvaluatorTrainer(Trainer):
     BAD_SCORE_THRESHOLD = 3.7
 
     @override
-    def __iter__(self) -> Generator[list[dict[str, str]], None, None]:
-        for recipe in self._all_recipes():
-            for conversation in self._process_document(recipe):
-                yield conversation
+    def __iter__(self) -> Generator[Training, None, None]:
+        for idx, recipe in enumerate(self._all_recipes()):
+            try:
+                for position, conversation in enumerate(self._process_document(recipe)):
+                    yield self._training(conversation=conversation,
+                                         conversation_id=idx,
+                                         position=position,
+                                         source=recipe.document
+                                         )
+            except Exception as e:
+                _logger.exception(f"Failed to process recipe: {recipe.document.title}", e)
             self._reset()
 
-    def _process_document(self, recipe: Recipe) -> Generator[list[dict[str, str]], None, None]:
+    def _process_document(self, recipe: Recipe) -> Generator[dict[str, str], None, None]:
         if recipe.review_count < self.MIN_REVIEWS:
             return
 
-        conversation = [{
+        intro = {
             "role": "user",  # TODO: Try using system here.
             "content": f"Starting after the line break is a recipe by a food magazine.\n\n{recipe}"
-        }]
-        self._chatlog += conversation
+        }
+
+        yield intro
+        self._chatlog.append(intro)
 
         critic = ""
         with self.chat_scope():
@@ -122,7 +161,7 @@ class RecipeEvaluatorTrainer(Trainer):
             # TODO: This sort of phrasing basically just applies if the recipe is not close to perfect.
             if self._chat("Is there a concensus amongs the reviews that the recipe could be improved in some way?",
                           grammar=self.GRAMMAR_YES_NO) == "no":
-                print("no concensus among the reviews")
+                _logger.info("No concensus among the reviews")
                 critic = self._chat("Write a paragraph that suggest how to improve this recipe."
                                     "Write your response using the recipe as the subject of your sentences. ")
                 # "State the reviewers' conclusions as fact, don't quote them.")
@@ -131,29 +170,34 @@ class RecipeEvaluatorTrainer(Trainer):
             # self._chat(f"Describe why the recipe should get a score of {recipe.review_score}/5")
 
         if recipe.review_score > self.VERY_GOOD_SCORE_THRESHOLD:
-            conversation += self._q_and_q_messages("Does this recipe actually look good?",
-                                                   f"Yes, very good. I'll give it {recipe.review_score}/5\n\n" + critic)
+            yield from self._q_and_q_messages("Does this recipe actually look good?",
+                                              f"Yes, very good. I'll give it {recipe.review_score}/5\n\n" + critic)
         elif recipe.review_score < self.BAD_SCORE_THRESHOLD:
-            conversation += self._q_and_q_messages("Does this recipe actually look good?",
-                                                   f"No, not really. I'll give it {recipe.review_score}/5\n\n" + critic)
+            yield from self._q_and_q_messages("Does this recipe actually look good?",
+                                              f"No, not really. I'll give it {recipe.review_score}/5\n\n" + critic)
         else:
-            conversation += self._q_and_q_messages("Does this recipe actually look good?",
-                                                   f"It can be good. I'll give it {recipe.review_score}/5\n\n" + critic)
-
-        yield conversation
+            yield from self._q_and_q_messages("Does this recipe actually look good?",
+                                              f"It can be good. I'll give it {recipe.review_score}/5\n\n" + critic)
 
 
 class RecipeTrainer(Trainer):
     MIN_SCORE = 3.5
 
     @override
-    def __iter__(self) -> Generator[list[dict[str, str]], None, None]:
-        for recipe in self._all_recipes():
-            for conversation in self._process_document(recipe):
-                yield conversation
+    def __iter__(self) -> Generator[Training, None, None]:
+        for idx, recipe in enumerate(self._all_recipes()):
+            try:
+                for position, conversation in enumerate(self._process_document(recipe)):
+                    yield self._training(conversation=conversation,
+                                         conversation_id=idx,
+                                         position=position,
+                                         source=recipe.document
+                                         )
+            except Exception as e:
+                _logger.exception(f"Failed to process recipe: {recipe.document.title}", e)
             self._reset()
 
-    def _process_document(self, recipe: Recipe) -> Generator[list[dict[str, str]], None, None]:
+    def _process_document(self, recipe: Recipe) -> Generator[dict[str, str], None, None]:
         if recipe.review_score is None or recipe.review_score < self.MIN_SCORE:
             return
 
@@ -179,7 +223,7 @@ class RecipeTrainer(Trainer):
                         break
                     secrets.append(answer)
                 else:
-                    print("Tried four times.")
+                    _logger.info("Generated too many techniques from the recipe.")
 
         title = self._chat(
             f'The original title of the recipe is: "{doc.title}". '
@@ -193,20 +237,18 @@ class RecipeTrainer(Trainer):
         question = self._prompt("Can you fix this sentence to be more grammatically correct? "
                                 "Your response must only included the fixed sentence.\n\n"
                                 f"I'd like to prepare {title} tonight. Can you propose a recipe?")
-        conversation = [
-            *self._q_and_q_messages(question, repr(recipe)),
-            *self._q_and_q_messages("What are the nutrition facts?", recipe.format_nutrition())
-        ]
+        yield from self._q_and_q_messages(question, repr(recipe))
+        yield from self._q_and_q_messages("What are the nutrition facts?", recipe.format_nutrition())
 
         if recipe.cuisine:
-            conversation += self._q_and_q_messages(
+            yield from self._q_and_q_messages(
                 "What sort of cuisine is that?",
                 ", ".join(recipe.cuisine[:-1]) + " and " + recipe.cuisine[-1] if len(recipe.cuisine) > 1
                 else recipe.cuisine[0]
             )
 
         if recipe.category:
-            conversation += self._q_and_q_messages(
+            yield from self._q_and_q_messages(
                 "How would you caracterize this recipe?",
                 "As a " + ", ".join(recipe.category[:-1]) + " and " + recipe.category[-1] if len(recipe.category) > 1
                 else recipe.category[0])
@@ -218,36 +260,35 @@ class RecipeTrainer(Trainer):
                 time_answer = f"This recipe needs {humanize.naturaldelta(recipe.prep_time)} to prepare."
             else:
                 time_answer = f"This recipe needs {humanize.naturaldelta(recipe.total_time)} in total."
-            conversation += self._q_and_q_messages(
+            yield from self._q_and_q_messages(
                 "How long does the recipe take?",
                 time_answer
             )
 
         if secrets:
-            conversation += self._q_and_q_messages(
+            yield from self._q_and_q_messages(
                 "How can I make sure this recipe is a success?",
                 self._prompt(
                     "Summarize, simplify, and improve the wording of the following text:\n\n" + "\n".join(secrets))
             )
 
-        yield conversation
-
 
 class SummarizingTrainer(Trainer):
     @override
-    def __iter__(self) -> Generator[list[dict[str, str]], None, None]:
-        for document in (Document(**i) for i in self._sql.select("SELECT * FROM Document")):
-            print(document.title)  # TODO: Remove
-            for conversation in self._process_document(document):
-                yield conversation
+    def __iter__(self) -> Generator[Training, None, None]:
+        for idx, document in enumerate(self._all_documents()):
+            try:
+                for position, conversation in enumerate(self._process_document(document)):
+                    yield self._training(conversation=conversation,
+                                         conversation_id=idx,
+                                         position=position,
+                                         source=document
+                                         )
+            except Exception as e:
+                _logger.exception(f"Failed to process recipe: {document.title}", e)
             self._reset()
 
-    def _build_conversation(self, question: str, summary: str) -> list[dict[str, str]]:
-        return [{"role": "system", "content": self.SYSTEM_PROMPT},
-                {"role": "user", "content": question},
-                {"role": "assistant", "content": summary}]
-
-    def _process_document(self, doc: Document) -> Generator[list[dict[str, str]], None, None]:
+    def _process_document(self, doc: Document) -> Generator[dict[str, str], None, None]:
         self._chatlog.append({
             "role": "user",  # Using system breaks the next prompt.
             "content": "Starting after the line break is an ARTICLE by a food magazine.\n\n" + doc.text
@@ -264,7 +305,7 @@ class SummarizingTrainer(Trainer):
         # TODO: Alternative idea: Ask all questions at the same time.
         questions = []
         with self.chat_scope():
-            question = self._chat("Is there a cooking related QUESTION that this article would answer? "
+            question = self._chat("Is there a cooking related QUESTION that the content of this article would answer? "
                                   'Respond only with the QUESTION which must end with a question mark(?). '
                                   'Avoid using the words: "article" and "author".')
 
@@ -274,16 +315,18 @@ class SummarizingTrainer(Trainer):
                     "stories must be avoided. Don't try to compromize.",
                     grammar=self.GRAMMAR_YES_NO) == "yes":
                 # TODO: Compare embeddings before adding to the list.
+                # TODO: Move this to post-processing
+                # TODO: Try asking the model to rephrase the sentence instead
                 if not re.search("article|author", question, flags=re.IGNORECASE):
                     questions.append(question)
                 if len(questions) == 4:
-                    print("Too many questions")
+                    _logger.info("Generated too many questions")
                     break
                 question = self._chat(
-                    'Is there another cooking related QUESTION that this article would answer? '
+                    'Is there another cooking related QUESTION that the content of this article would answer? '
                     'Respond only with the QUESTION which must end with a question mark(?), or with "no" if you can\'t think of any new original question. '
                     'Respond with "no" if your question is similar to a previous one. '
-                    'Your response MUST NOT use the words: "article" nor "author"')
+                    'Your response MUST NOT use the words: "article" nor "author".')
 
         for question in questions:
             with self.chat_scope():
@@ -293,30 +336,17 @@ class SummarizingTrainer(Trainer):
                     f'Elaborate in up to 600 words. Avoid using the words: "article" and "author".',
                     max_tokens=2000)
 
-                yield self._build_conversation(question, summary)
+                yield from self._q_and_q_messages(question, summary)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('model')
     args = parser.parse_args()
-    llm = Llama(model_path=args.model, n_gpu_layers=99, n_ctx=16 * 1024, chat_format="chatml", verbose=False)
+    llm = Llama(model_path=args.model, n_gpu_layers=99, n_ctx=16 * 1024, chat_format="chatml", verbose=False,
+                embedding=True)
     sql = SQLitePipeline()
 
-    recipe_count = next(sql.select("SELECT count(1) as c FROM Recipe"))["c"]
-    document_count = next(sql.select("SELECT count(1) as c FROM Document"))["c"]
-
-    with open("recipes.jsonl", "w") as file:
-        for training in tqdm.tqdm(RecipeTrainer(llm, sql), total=recipe_count):  # This assumption may not remain true.
-            file.write("<s>")
-            json.dump(training, file, ensure_ascii=False)
-
-    with open("reviews.jsonl", "w") as file:
-        for training in tqdm.tqdm(RecipeEvaluatorTrainer(llm, sql), total=recipe_count):
-            file.write("<s>")
-            json.dump(training, file, ensure_ascii=False)
-
-    with open("summaries.jsonl", "w") as file:
-        for training in tqdm.tqdm(SummarizingTrainer(llm, sql), total=document_count):
-            file.write("<s>")
-            json.dump(training, file, ensure_ascii=False)
+    for trainer in RecipeEvaluatorTrainer, RecipeTrainer, SummarizingTrainer:
+        _logger.info(f"Starting trainer: {trainer.__name__}")
+        trainer(llm, sql).start()

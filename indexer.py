@@ -20,9 +20,9 @@ sqlite = SQLitePipeline()
 
 
 def insert_db(document: Document):
-    sqlite.process_item(document)
+    sqlite.insert(document)
     if document.recipe:
-        sqlite.process_item(document.recipe)
+        sqlite.insert(document.recipe)
 
 
 def index_html(html):
