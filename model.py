@@ -18,20 +18,15 @@ class Document(DataclassIterableMixin):
         metadata = json.loads(selector.css("script#schema-lifestyle_1-0::text").get(), strict=False)[0]
 
         self = Document(
-            json=metadata,
-            html_fragment=selector.css("article .text-passage").get(),
             title=unescape(metadata["headline"]),
             text=unescape("".join(selector.css("article .text-passage p.comp::text").getall()).strip()),
             subtitle=unescape(selector.xpath('//meta[@name="description"]/@content').get()),
             author=unescape(metadata["author"][0]["name"]),
         )
-        self.recipe = Recipe.from_document(self) if metadata["@type"][0] == "Recipe" else None
+        self.recipe = Recipe.build(self, metadata) if metadata["@type"][0] == "Recipe" else None
         assert self.text, "Empty document"
         return self
 
-    json: dict = field(repr=False)  # jsonb.
-    html_fragment: str = field(
-        repr=False)  # article tag. So that an AI can interpret HTML as additional context (e.g. subtitles).
     title: str
     text: str
     author: str
@@ -42,30 +37,32 @@ class Document(DataclassIterableMixin):
 @dataclass
 class Recipe(DataclassIterableMixin):
     @staticmethod
-    def from_document(document: Document):
+    def build(document: Document, metadata: dict):
         self = Recipe(document=document)
         self.document = document
 
         with contextlib.suppress(KeyError):
-            self.review_score = float(document.json["aggregateRating"]["ratingValue"])
+            self.review_score = float(metadata["aggregateRating"]["ratingValue"])
         with contextlib.suppress(KeyError):
-            self.review_count = int(document.json["aggregateRating"]["ratingCount"])
+            self.review_count = int(metadata["aggregateRating"]["ratingCount"])
         with contextlib.suppress(KeyError):
-            self.ingredients = unescape(document.json["recipeIngredient"])
+            self.reviews = [unescape(i["reviewBody"]) for i in metadata["review"]]
         with contextlib.suppress(KeyError):
-            self.directions = [unescape(i["text"]) for i in document.json["recipeInstructions"]]
+            self.ingredients = unescape(metadata["recipeIngredient"])
         with contextlib.suppress(KeyError):
-            self.nutrition = {i: unescape(j) for i, j in document.json["nutrition"].items() if i != "@type"}
+            self.directions = [unescape(i["text"]) for i in metadata["recipeInstructions"]]
         with contextlib.suppress(KeyError):
-            self.category = [unescape(i) for i in document.json["recipeCategory"]]
+            self.nutrition = {i: unescape(j) for i, j in metadata["nutrition"].items() if i != "@type"}
         with contextlib.suppress(KeyError):
-            self.cuisine = [unescape(i) for i in document.json["recipeCuisine"]]
+            self.category = [unescape(i) for i in metadata["recipeCategory"]]
+        with contextlib.suppress(KeyError):
+            self.cuisine = [unescape(i) for i in metadata["recipeCuisine"]]
         with contextlib.suppress(KeyError, TypeError):
-            self.prep_time = isodate.parse_duration(document.json["prepTime"])
+            self.prep_time = isodate.parse_duration(metadata["prepTime"])
         with contextlib.suppress(KeyError, TypeError):
-            self.total_time = isodate.parse_duration(document.json["totalTime"])
+            self.total_time = isodate.parse_duration(metadata["totalTime"])
         with contextlib.suppress(KeyError):
-            self.recipeYield = unescape(document.json["recipeYield"])
+            self.recipeYield = unescape(metadata["recipeYield"])
 
         return self
 
@@ -74,7 +71,8 @@ class Recipe(DataclassIterableMixin):
     directions: list[str] = field(default_factory=list)
     nutrition: dict[str, str] = field(default_factory=dict)
     review_score: float = None  # /5
-    review_count: int = None
+    review_count: int = 0
+    reviews: list[str] = field(default_factory=list)
     category: list[str] = field(default_factory=list)
     cuisine: list[str] = field(default_factory=list)
     prep_time: timedelta = None
@@ -90,6 +88,9 @@ class Recipe(DataclassIterableMixin):
 
     def format_nutrition(self):
         return "\n".join(f"{i}: {j}" for i, j in self.nutrition.items())
+
+    def format_reviews(self):
+        return "\n".join(self.reviews)
 
     def __repr__(self):
         return f"""Ingredients:
