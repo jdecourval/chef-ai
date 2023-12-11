@@ -48,9 +48,9 @@ class Trainer:
 
     @contextmanager
     def chat_scope(self):
-        backup = self._chatlog.copy()
+        old_size = len(self._chatlog)
         yield
-        self._chatlog = backup  # TODO: Use a stack and keep track of the old height.
+        self._chatlog = self._chatlog[:old_size]
 
     def _reset(self):
         self._chatlog = [{"role": "system", "content": self.SYSTEM_PROMPT}]
