@@ -7,8 +7,8 @@ from trainer.trainer import Trainer, _logger, next_variation
 
 class RecipeEvaluatorTrainer(Trainer):
     MIN_REVIEWS = 10
-    VERY_GOOD_SCORE_THRESHOLD = 4.5
-    BAD_SCORE_THRESHOLD = 3.7
+    VERY_GOOD_SCORE_THRESHOLD = 4.4  # >=
+    BAD_SCORE_THRESHOLD = 3.7  # <
 
     class Variations:
         looks_good = deque([
@@ -108,7 +108,7 @@ class RecipeEvaluatorTrainer(Trainer):
                                          position=position,
                                          source=recipe.document
                                          )
-            except Exception:
+            except:
                 _logger.exception(f"Failed to process recipe: {recipe.document.title}")
             self._reset()
 
@@ -134,7 +134,7 @@ class RecipeEvaluatorTrainer(Trainer):
                                   "Act like you never saw the reviews. "
                                   "This means you cannot refer to the reviews, reviewers or users in your response.")
 
-        if recipe.review_score > self.VERY_GOOD_SCORE_THRESHOLD:
+        if recipe.review_score >= self.VERY_GOOD_SCORE_THRESHOLD:
             yield from self._q_and_q_messages(
                 next_variation(self.Variations.looks_good),
                 next_variation(self.Variations.yes_good).format(recipe.review_score, why_good).strip())
@@ -150,13 +150,12 @@ class RecipeEvaluatorTrainer(Trainer):
                 yield from self._q_and_q_messages(
                     next_variation(self.Variations.looks_good),
                     next_variation(self.Variations.no_good).format(recipe.review_score, why_good).strip())
-
-                yield from self._q_and_q_messages(next_variation(self.Variations.how_to_improve), critic)
             else:
                 yield from self._q_and_q_messages(
                     next_variation(self.Variations.looks_good),
                     next_variation(self.Variations.maybe_good).format(recipe.review_score, why_good).strip())
 
+            if critic:
                 yield from self._q_and_q_messages(next_variation(self.Variations.how_to_improve), critic)
 
 
