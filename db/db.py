@@ -2,10 +2,10 @@ import dataclasses
 import datetime
 import json
 import sqlite3
-from typing import Any, Generator
+from typing import Any, Generator, Type
 
-from db_utils import field_description, DataclassIterableMixin
-from model import Document, Recipe, Training
+from db.db_utils import field_description, DataclassIterableMixin
+from model.model import Document, Recipe, Training
 
 
 class SQLitePipeline:
@@ -14,14 +14,15 @@ class SQLitePipeline:
         sqlite3.register_adapter(dict, json.dumps)
         sqlite3.register_adapter(list, json.dumps)
         sqlite3.register_adapter(datetime.timedelta, lambda x: x.seconds)
-        sqlite3.register_adapter(Document, lambda x: x.id)  # TODO: Make generic
+        sqlite3.register_adapter(Document, lambda x: x.primary_key)
 
         # Register the adapter and converter
         sqlite3.register_converter("dict", json.loads)
         sqlite3.register_converter("list", json.loads)
         sqlite3.register_converter("timedelta", lambda x: datetime.timedelta(seconds=int(x)))
+        sqlite3.register_converter("Role", lambda x: Training.Role(int(x)))  # TODO: Make generic
 
-        def dict_factory(cursor, row):
+        def dict_row_factory(cursor, row):
             fields = [column[0] for column in cursor.description]
             return {key: value for key, value in zip(fields, row)}
 
@@ -30,29 +31,28 @@ class SQLitePipeline:
         self.connection.execute("PRAGMA journal_mode = WAL")
         self.connection.execute("PRAGMA foreign_keys = ON")
         self.connection.autocommit = False
-        self.connection.row_factory = dict_factory
+        self.connection.row_factory = dict_row_factory
 
         with self.connection:
             self._create_table_from_dataclass(Document)  # TODO: Move out of here to make generic.
             self._create_table_from_dataclass(Recipe)
             self._create_table_from_dataclass(Training)
 
-    def _create_table_from_dataclass(self, dc: type):
+    def _create_table_from_dataclass(self, dc: Type[dataclasses.dataclass]):
         fields = ','.join([field_description(field) for field in dataclasses.fields(dc)])
         self.connection.execute(f"CREATE TABLE IF NOT EXISTS {dc.__name__}({fields})")
 
     def insert(self, item: DataclassIterableMixin):
-        primary_key = item.primary_key().name
         insert = "INSERT INTO {} ({}) VALUES ({}) RETURNING {}".format(
             type(item).__name__,
             ','.join(item.fields_name()),
             ','.join(item.placeholders()),
-            item.primary_key().name
+            item.primary_key_name()
         )
 
         with self.connection:
             result = self.connection.execute(insert, item)
-            setattr(item, primary_key, result.fetchone()[primary_key])
+            item.primary_key = result.fetchone()[item.primary_key_name()]
 
     def select(self, query: str, *args, **kwargs) -> Generator[dict[str, Any], None, None]:
         with self.connection:

@@ -9,7 +9,7 @@ import isodate
 import numpy as np
 from parsel import Selector
 
-from db_utils import DataclassIterableMixin
+from db.db_utils import DataclassIterableMixin
 
 
 @dataclass
@@ -97,7 +97,9 @@ class Recipe(DataclassIterableMixin):
         return "\n".join(self.reviews)
 
     def __repr__(self):
-        return f"""Ingredients:
+        return f"""{self.document.title}
+        
+Ingredients:
 {self.format_ingredients()}
 
 Instructions:
@@ -108,15 +110,16 @@ Instructions:
 @dataclass
 class Training(DataclassIterableMixin):
     class Role(enum.IntEnum):
-        system = 1
-        user = 2
-        assistant = 3
+        system = 0
+        user = 1
+        assistant = 2
 
     conversation: int  # messages part of the same conversation have the same id.
     position: int  # position in the conversation.
-    content: str
+    content: str  # content initially generated
     role: Role
     embedding: np.ndarray  # Serialized numpy array.
     trainer: str  # The class that generated this content.
+    postprocessed: str = None  # content fixed by post-processing
     source: Document = None  # The document that helped generated this content, if applicable. For bookkeeping.
     id: int = field(metadata="PRIMARY KEY", default=None)

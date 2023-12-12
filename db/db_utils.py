@@ -1,4 +1,5 @@
 import dataclasses
+from collections import abc
 
 
 def field_description(field: dataclasses.Field):
@@ -19,8 +20,10 @@ def field_type(field: dataclasses.Field):
         return "INTEGER"
     if field.type is str:
         return "TEXT"
-    if issubclass(field.type, DataclassIterableMixin):
-        return f"{field_type(field.type.primary_key())} REFERENCES {field.type.__name__}({field.type.primary_key().name})"
+    if isinstance(field.type, type) and issubclass(field.type, DataclassIterableMixin):
+        return (f"{field_type(field.type.primary_key_field())} "
+                f"REFERENCES {field.type.__name__}({field.type.primary_key_name()})")
+    # This works together with register_converter.
     return field.type.__name__  # TODO: Check that the type has been registered.
 
 
@@ -57,5 +60,21 @@ class DataclassIterableMixin:
                 if getattr(self, field.name) is not None]
 
     @classmethod
-    def primary_key(cls):
+    def primary_key_field(cls):
         return next(field for field in dataclasses.fields(cls) if "PRIMARY KEY" in field.metadata)
+
+    @classmethod
+    def primary_key_name(cls):
+        try:
+            return cls.__primary_key_name
+        except AttributeError:
+            cls.__primary_key_name = cls.primary_key_field().name
+            return cls.__primary_key_name
+
+    @property
+    def primary_key(self):
+        return getattr(self, self.primary_key_name())
+
+    @primary_key.setter
+    def primary_key(self, value):
+        setattr(self, self.primary_key_name(), value)

@@ -1,26 +1,21 @@
 import abc
 import argparse
 import logging
-import re
 from contextlib import contextmanager
 from typing import override, Generator
 
 import humanize
 import numpy as np
-from tqdm import tqdm
 from llama_cpp import Llama, LlamaGrammar
+from tqdm import tqdm
 
-from db import SQLitePipeline
-from model import Document, Recipe, Training
+from db.db import SQLitePipeline
+from model.model import Document, Recipe, Training
 
-# TODO: Use embeddings to remove duplicated questions (and answers?). Ask the model to generalize the knowledge?
 # TODO: Use multiple similar variations of each prompt in the training set.
 # TODO: Try this model to generate questions: https://huggingface.co/FPHam/Generate_Question_Mistral_7B
 # TODO: Generate content from charts/pictures.
 # TODO: CoT or similar prompting style. Read Orca paper.
-# TODO: exllamav2
-# TODO: Samplers
-# TODO: CFG
 # TODO: Metrics
 
 
@@ -40,15 +35,16 @@ class CategoryIngredientTrainer:
 
 
 class Trainer:
-    SYSTEM_PROMPT = ("You are an helpful assistant. Below is an instruction that describes a task. "
+    SYSTEM_PROMPT = ("You are a helpful assistant. Below is an instruction that describes a task. "
                      "Write a response that appropriately completes the request.")
     CHAT_DEFAULTS = {"max_tokens": 200, "temperature": 0}
     GRAMMAR_YES_NO = LlamaGrammar.from_string('root ::= "yes" | "no"', verbose=False)
 
-    def __init__(self, llm: Llama, sql: SQLitePipeline):
+    def __init__(self, llm: Llama, sql: SQLitePipeline, limit=False):
         self._llm = llm
         self._sql = sql
         self._chatlog = []
+        self._limit = "LIMIT 50" if limit else ""
         self._reset()
 
     @contextmanager
@@ -70,7 +66,8 @@ class Trainer:
         _logger.debug(f"Prompting: {prompt}")
         self._chatlog.append({"role": "user", "content": prompt})
         # ValueError on prompt too large.
-        message = llm.create_chat_completion(self._chatlog, **{**self.CHAT_DEFAULTS, **kwargs})['choices'][0]['message']
+        message = self._llm.create_chat_completion(self._chatlog, **{**self.CHAT_DEFAULTS, **kwargs})['choices'][0][
+            'message']
         _logger.debug(f"Prompt result: {message['content']}")
         self._chatlog.append(message)
         return message['content']
@@ -84,21 +81,22 @@ class Trainer:
         pass
 
     def _count_table(self, table: str) -> int:
-        return next(sql.select(f"SELECT count(1) as c FROM {table}"))["c"]
+        return next(sql.select(f"SELECT count(1) as c FROM {table} {self._limit}"))["c"]
 
     def _all_recipes(self) -> Generator[Recipe, None, None]:
-        recipe_count = next(sql.select("SELECT count(1) as c FROM Recipe"))["c"]
         # A join would be much faster, but good enough for now.
-        recipes = [Recipe(**i) for i in self._sql.select("SELECT * FROM Recipe")]
-        for recipe, document in tqdm(zip(recipes, self._sql.select(
-                f"SELECT * FROM Document WHERE id IN ({",".join('?' * len(recipes))})",
-                [j.document for j in recipes])), total=recipe_count):
+        recipes = [Recipe(**i) for i in self._sql.select(f"SELECT * FROM Recipe {self._limit}")]
+        for recipe, document in zip(
+                tqdm(recipes),
+                self._sql.select("SELECT * FROM Document "
+                                 f"WHERE id IN ({",".join('?' * len(recipes))})", [i.document for i in recipes])):
             recipe.document = Document(**document)
             yield recipe
 
     def _all_documents(self) -> Generator[Document, None, None]:
-        document_count = next(sql.select("SELECT count(1) as c FROM Document"))["c"]
-        for document in tqdm((Document(**i) for i in self._sql.select("SELECT * FROM Document")), total=document_count):
+        for document in tqdm((Document(**i)
+                              for i in self._sql.select(f"SELECT * FROM Document {self._limit}")),
+                             total=self._count_table("Document")):
             yield document
 
     def _insert_training(self, training: Training):
@@ -117,8 +115,9 @@ class Trainer:
                         )
 
     def start(self):
-        for i in self:
-            self._sql.insert(i)
+        for count, training in enumerate(self):
+            self._sql.insert(training)
+        return count
 
 
 class RecipeEvaluatorTrainer(Trainer):
@@ -145,7 +144,7 @@ class RecipeEvaluatorTrainer(Trainer):
             return
 
         intro = {
-            "role": "user",  # TODO: Try using system here.
+            "role": "user",
             "content": f"Starting after the line break is a recipe by a food magazine.\n\n{recipe}"
         }
 
@@ -170,14 +169,17 @@ class RecipeEvaluatorTrainer(Trainer):
             # self._chat(f"Describe why the recipe should get a score of {recipe.review_score}/5")
 
         if recipe.review_score > self.VERY_GOOD_SCORE_THRESHOLD:
-            yield from self._q_and_q_messages("Does this recipe actually look good?",
-                                              f"Yes, very good. I'll give it {recipe.review_score}/5\n\n" + critic)
+            yield from self._q_and_q_messages(
+                "Does this recipe actually look good?",
+                f"Yes, very good. I'll give it {recipe.review_score}/5\n\n{critic}".strip())
         elif recipe.review_score < self.BAD_SCORE_THRESHOLD:
-            yield from self._q_and_q_messages("Does this recipe actually look good?",
-                                              f"No, not really. I'll give it {recipe.review_score}/5\n\n" + critic)
+            yield from self._q_and_q_messages(
+                "Does this recipe actually look good?",
+                f"No, not really. I'll give it {recipe.review_score}/5\n\n{critic}".strip())
         else:
-            yield from self._q_and_q_messages("Does this recipe actually look good?",
-                                              f"It can be good. I'll give it {recipe.review_score}/5\n\n" + critic)
+            yield from self._q_and_q_messages(
+                "Does this recipe actually look good?",
+                f"It can be good. I'll give it {recipe.review_score}/5\n\n{critic}".strip())
 
 
 class RecipeTrainer(Trainer):
@@ -203,7 +205,7 @@ class RecipeTrainer(Trainer):
 
         doc = recipe.document
         self._chatlog.append({
-            "role": "system",
+            "role": "user",
             "content": "Starting after the line break is a RECIPE by a food magazine.\n\n" + doc.text
         })
 
@@ -231,11 +233,9 @@ class RecipeTrainer(Trainer):
             f'Your response must be terse, only include the answer to the question and not use the word "recipe" nor any verb.',
             max_tokens=8)
         title = title.strip('"')  # Sometimes the response is quoted.
-        if self._chat(f'Is "{title}" a simpler title simpler than "{doc.title}"?', grammar=self.GRAMMAR_YES_NO) == "no":
-            title = doc.title  # TODO: Seems useless. Measure.
 
         question = self._prompt("Can you fix this sentence to be more grammatically correct? "
-                                "Your response must only included the fixed sentence.\n\n"
+                                "Your response must only include the fixed sentence.\n\n"
                                 f"I'd like to prepare {title} tonight. Can you propose a recipe?")
         yield from self._q_and_q_messages(question, repr(recipe))
         yield from self._q_and_q_messages("What are the nutrition facts?", recipe.format_nutrition())
@@ -255,7 +255,8 @@ class RecipeTrainer(Trainer):
 
         if recipe.prep_time or recipe.total_time:
             if recipe.prep_time and recipe.total_time:
-                time_answer = f"This recipe needs {humanize.naturaldelta(recipe.prep_time)} to prepare and {humanize.naturaldelta(recipe.total_time)} in total."
+                time_answer = (f"This recipe needs {humanize.naturaldelta(recipe.prep_time)} to prepare and "
+                               f"{humanize.naturaldelta(recipe.total_time)} in total.")
             elif recipe.prep_time:
                 time_answer = f"This recipe needs {humanize.naturaldelta(recipe.prep_time)} to prepare."
             else:
@@ -317,8 +318,8 @@ class SummarizingTrainer(Trainer):
                 # TODO: Compare embeddings before adding to the list.
                 # TODO: Move this to post-processing
                 # TODO: Try asking the model to rephrase the sentence instead
-                if not re.search("article|author", question, flags=re.IGNORECASE):
-                    questions.append(question)
+                # if not re.search("article|author", question, flags=re.IGNORECASE):
+                questions.append(question)
                 if len(questions) == 4:
                     _logger.info("Generated too many questions")
                     break
@@ -340,13 +341,16 @@ class SummarizingTrainer(Trainer):
 
 
 if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser()
     parser.add_argument('model')
     args = parser.parse_args()
     llm = Llama(model_path=args.model, n_gpu_layers=99, n_ctx=16 * 1024, chat_format="chatml", verbose=False,
                 embedding=True)
+    # llm.set_cache(LlamaRAMCache(100 * 1024 ** 2))  # This seems to massively increase RAM usage and slow down overall.
     sql = SQLitePipeline()
 
     for trainer in RecipeEvaluatorTrainer, RecipeTrainer, SummarizingTrainer:
         _logger.info(f"Starting trainer: {trainer.__name__}")
-        trainer(llm, sql).start()
+        training_count = trainer(llm, sql, limit=True).start()
+        _logger.info(f"Trainer done. It generated {training_count} documents.")
