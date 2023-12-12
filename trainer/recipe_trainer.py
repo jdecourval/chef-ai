@@ -8,20 +8,20 @@ from trainer.trainer import Trainer, _logger, next_variation
 
 
 class RecipeTrainer(Trainer):
-    MIN_SCORE = 3.5
+    MIN_SCORE = 4.0
 
     class Variations:
         propose_recipe = deque([
-            "I'd like to prepare {} tonight. Can you propose a recipe?",
-            "Thinking of making {} for dinner tonight. Any recipe suggestions you can share?",
-            "Considering {} for tonight's meal. Any recipe ideas you could recommend?",
-            "Contemplating a {} dish for dinner. Mind sharing a recipe suggestion?",
-            "In the mood for {} tonight. Any chance you could suggest a recipe?",
-            "Craving {} for dinner. Can you recommend a recipe to prepare?",
-            "Interested in cooking {} tonight. Any recipe suggestions from your culinary expertise?",
-            "Considering a {} dish for tonight. Any go-to recipes you'd recommend trying?",
-            "Contemplating {} as the main course. Could you propose a recipe for tonight's dinner?",
-            "Feeling like preparing {} tonight. Do you have a recipe you'd suggest for me?"
+            ("I'd like to prepare [] tonight.", " Can you propose a recipe?"),
+            ("Thinking of making [] for dinner tonight.", " Any recipe suggestions you can share?"),
+            ("Considering [] for tonight's meal.", " Any recipe ideas you could recommend?"),
+            ("Contemplating a [] dish for dinner.", " Mind sharing a recipe suggestion?"),
+            ("In the mood for [] tonight.", " Any chance you could suggest a recipe?"),
+            ("Craving [] for dinner.", " Can you recommend a recipe to prepare?"),
+            ("Interested in cooking [] tonight.", " Any recipe suggestions from your culinary expertise?"),
+            ("Considering a [] dish for tonight.", " Any go-to recipes you'd recommend trying?"),
+            ("Contemplating [] as the main course.", " Could you propose a recipe for tonight's dinner?"),
+            ("Feeling like preparing [] tonight.", " Do you have a recipe you'd suggest for me?")
         ])
 
         give_nutrition = deque([
@@ -167,6 +167,7 @@ class RecipeTrainer(Trainer):
             "content": "Starting after the line break is a RECIPE by a food magazine.\n\n" + doc.text
         })
 
+        # TODO: Optimize this
         secrets = []
         with self.chat_scope():
             # Maybe redundant with SummarizingTrainer? Probably different enough.
@@ -185,35 +186,33 @@ class RecipeTrainer(Trainer):
                 else:
                     _logger.info("Generated too many techniques from the recipe.")
 
+        title_variation = next_variation(self.Variations.propose_recipe)
         title = self._chat(
-            f'The original title of the recipe is: "{doc.title}". '
-            f' What is being cooked in this recipe? '
-            f'Your response must be terse, only include the answer to the question and not use the word "recipe" nor any verb.',
-            max_tokens=8)
-        title = title.strip('"')  # Sometimes the response is quoted.
-
-        question = self._prompt("Can you fix this sentence to be more grammatically correct? "
-                                "Your response must only include the fixed sentence.\n\n"
-                                f"{next_variation(self.Variations.propose_recipe).format(title)}")
-        yield from self._q_and_q_messages(question, repr(recipe))
+            f'Optional context: The original title of the recipe is: "{doc.title}". '
+            f'Answer the question: What is being cooked in this recipe? '
+            f'Your answer must complete the sentence: "{title_variation[0]}". '
+            "The sentence includes a template marker []. You must substitute the template marker by your answer. "
+            "Respond with the completed sentence only.",
+            max_tokens=20) + title_variation[1]
+        yield from self._q_and_q_messages(title, repr(recipe))
         yield from self._q_and_q_messages(next_variation(self.Variations.give_nutrition), recipe.format_nutrition())
 
         if recipe.cuisine:
             yield from self._q_and_q_messages(
                 next_variation(self.Variations.which_cuisine),
                 # TODO: prompt: Write a sentence that briefly answers the question considering the answer is {}.
-                next_variation(self.Variations.cuisine_answer) + ", ".join(recipe.cuisine[:-1]) + " and " +
-                recipe.cuisine[-1] if len(recipe.cuisine) > 1
-                else recipe.cuisine[0]
+                next_variation(self.Variations.cuisine_answer) + (", ".join(recipe.cuisine[:-1]) + " and " +
+                                                                  recipe.cuisine[-1] if len(recipe.cuisine) > 1
+                                                                  else recipe.cuisine[0])
             )
 
         if recipe.category:
             yield from self._q_and_q_messages(
                 next_variation(self.Variations.which_category),
                 # TODO: prompt: Write a sentence that briefly answers the question considering the answer is {}.
-                next_variation(self.Variations.category_answer) + ", ".join(recipe.category[:-1]) + " and " +
-                recipe.category[-1] if len(recipe.category) > 1
-                else recipe.category[0])
+                next_variation(self.Variations.category_answer) + (", ".join(recipe.category[:-1]) + " and " +
+                                                                   recipe.category[-1] if len(recipe.category) > 1
+                                                                   else recipe.category[0]))
 
         if recipe.prep_time or recipe.total_time:
             if recipe.prep_time and recipe.total_time:
@@ -231,3 +230,22 @@ class RecipeTrainer(Trainer):
         if secrets:
             yield from self._q_and_q_messages(next_variation(self.Variations.how_to_suceed), self._prompt(
                 "Summarize, simplify, and improve the wording of the following text:\n\n" + "\n".join(secrets)))
+
+
+if __name__ == '__main__':
+    import logging
+    import argparse
+    from llama_cpp import Llama
+    from db.db import SQLitePipeline
+
+    logging.basicConfig(level=logging.INFO)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('model')
+    args = parser.parse_args()
+    llm = Llama(model_path=args.model, n_gpu_layers=99, n_ctx=16 * 1024, chat_format="chatml", verbose=False,
+                embedding=True)
+    # llm.set_cache(LlamaRAMCache(100 * 1024 ** 2))  # This seems to massively increase RAM usage and slow down overall.
+    sql = SQLitePipeline()
+
+    training_count = RecipeTrainer(llm, sql, limit=False).start()
+    _logger.info(f"Trainer done. It generated {training_count} documents.")
