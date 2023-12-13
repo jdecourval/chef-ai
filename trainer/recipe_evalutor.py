@@ -1,8 +1,11 @@
+import logging
 from collections import deque
 from typing import override, Generator
 
 from model.model import Training, Recipe
-from trainer.trainer import Trainer, _logger, next_variation
+from trainer.trainer import Trainer, next_variation, main
+
+_logger = logging.getLogger(__name__)
 
 
 class RecipeEvaluatorTrainer(Trainer):
@@ -86,16 +89,16 @@ class RecipeEvaluatorTrainer(Trainer):
         ])
 
         how_to_improve = deque([
-             "What changes could enhance this recipe?",
-             "In what ways do you think this recipe could be elevated?",
-             "Are there any improvements you would suggest for this recipe?",
-             "How might we enhance the flavors in this recipe?",
-             "Can you think of any adjustments that would make this recipe better?",
-             "What improvements do you envision for this particular recipe?",
-             "Do you see any room for enhancement in this recipe?",
-             "Are there any tweaks or modifications that could enhance this recipe?",
-             "In what ways could this recipe be perfected?",
-             "Can you suggest any refinements to improve this recipe?"
+            "What changes could enhance this recipe?",
+            "In what ways do you think this recipe could be elevated?",
+            "Are there any improvements you would suggest for this recipe?",
+            "How might we enhance the flavors in this recipe?",
+            "Can you think of any adjustments that would make this recipe better?",
+            "What improvements do you envision for this particular recipe?",
+            "Do you see any room for enhancement in this recipe?",
+            "Are there any tweaks or modifications that could enhance this recipe?",
+            "In what ways could this recipe be perfected?",
+            "Can you suggest any refinements to improve this recipe?"
         ])
 
     @override
@@ -160,19 +163,4 @@ class RecipeEvaluatorTrainer(Trainer):
 
 
 if __name__ == '__main__':
-    import logging
-    import argparse
-    from llama_cpp import Llama
-    from db.db import SQLitePipeline
-
-    logging.basicConfig(level=logging.INFO)
-    parser = argparse.ArgumentParser()
-    parser.add_argument('model')
-    args = parser.parse_args()
-    llm = Llama(model_path=args.model, n_gpu_layers=99, n_ctx=16 * 1024, chat_format="chatml", verbose=False,
-                embedding=True)
-    # llm.set_cache(LlamaRAMCache(100 * 1024 ** 2))  # This seems to massively increase RAM usage and slow down overall.
-    sql = SQLitePipeline()
-
-    training_count = RecipeEvaluatorTrainer(llm, sql, limit=False).start()
-    _logger.info(f"Trainer done. It generated {training_count} documents.")
+    main(RecipeEvaluatorTrainer)

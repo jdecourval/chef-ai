@@ -1,10 +1,13 @@
+import logging
 from collections import deque
 from typing import override, Generator
 
 import humanize
 
 from model.model import Training, Recipe
-from trainer.trainer import Trainer, _logger, next_variation
+from trainer.trainer import Trainer, next_variation, main
+
+_logger = logging.getLogger(__name__)
 
 
 class RecipeTrainer(Trainer):
@@ -233,19 +236,4 @@ class RecipeTrainer(Trainer):
 
 
 if __name__ == '__main__':
-    import logging
-    import argparse
-    from llama_cpp import Llama
-    from db.db import SQLitePipeline
-
-    logging.basicConfig(level=logging.INFO)
-    parser = argparse.ArgumentParser()
-    parser.add_argument('model')
-    args = parser.parse_args()
-    llm = Llama(model_path=args.model, n_gpu_layers=99, n_ctx=16 * 1024, chat_format="chatml", verbose=False,
-                embedding=True)
-    # llm.set_cache(LlamaRAMCache(100 * 1024 ** 2))  # This seems to massively increase RAM usage and slow down overall.
-    sql = SQLitePipeline()
-
-    training_count = RecipeTrainer(llm, sql, limit=False).start()
-    _logger.info(f"Trainer done. It generated {training_count} documents.")
+    main(RecipeTrainer)

@@ -2,10 +2,11 @@ import abc
 import logging
 from collections import deque
 from contextlib import contextmanager
-from typing import override, Generator
+from typing import Generator, Type
 
 import numpy as np
 from llama_cpp import Llama, LlamaGrammar
+from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
 from db.db import SQLitePipeline
@@ -44,12 +45,18 @@ class Trainer:
                      "Write a response that appropriately completes the request.")
     CHAT_DEFAULTS = {"max_tokens": 400, "temperature": 0}
     GRAMMAR_YES_NO = LlamaGrammar.from_string('root ::= "yes" | "no"', verbose=False)
+    GRAMMAR_LIST = LlamaGrammar.from_string(r'''root ::= item+
+item ::= "- " [^\r\n\x0b\x0c\x85\u2028\u2029]+ "\n"''', verbose=False)
+    # GRAMMAR_LIST_NUMBERED = LlamaGrammar.from_string(r'''root ::= item+
+    # item ::= "\d+\. " [^\r\n\x0b\x0c\x85\u2028\u2029]+ "\n"''', verbose=False)
 
     def __init__(self, llm: Llama, sql: SQLitePipeline, limit=False):
         self._llm = llm
         self._sql = sql
         self._chatlog = []
         self._limit = "ORDER BY RANDOM() LIMIT 50" if limit else ""
+        self.embed_model = SentenceTransformer('thenlper/gte-large')
+        # self.embed_model = SentenceTransformer('sentence-transformers/all-mpnet-base-v2')
         self._reset()
 
     @contextmanager
@@ -109,12 +116,12 @@ class Trainer:
 
     def _training(self, conversation: dict[str, str], conversation_id: int, position: int,
                   source: Document) -> Training:
-        embedding = self._llm.embed(conversation["content"])
+        embedding = self.embed_model.encode(conversation["content"], show_progress_bar=False, normalize_embeddings=True)
         return Training(conversation=conversation_id,
                         position=position,
                         content=conversation["content"],
                         role=Training.Role[conversation["role"]],
-                        embedding=np.array(embedding),
+                        embedding=embedding,
                         trainer=self.__class__.__name__,
                         source=source
                         )
@@ -126,67 +133,20 @@ class Trainer:
         return count
 
 
-class SummarizingTrainer(Trainer):
-    @override
-    def __iter__(self) -> Generator[Training, None, None]:
-        for idx, document in enumerate(self._all_documents()):
-            try:
-                for position, conversation in enumerate(self._process_document(document)):
-                    yield self._training(conversation=conversation,
-                                         conversation_id=idx,
-                                         position=position,
-                                         source=document
-                                         )
-            except Exception as e:
-                _logger.exception(f"Failed to process recipe: {document.title}", e)
-            self._reset()
+def main(trainer: Type[Trainer], limit=False):
+    import logging
+    import argparse
+    from llama_cpp import Llama
+    from db.db import SQLitePipeline
 
-    def _process_document(self, doc: Document) -> Generator[dict[str, str], None, None]:
-        self._chatlog.append({
-            "role": "user",  # Using system breaks the next prompt.
-            "content": "Starting after the line break is an ARTICLE by a food magazine.\n\n" + doc.text
-        })
+    logging.basicConfig(level=logging.INFO)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('model')
+    args = parser.parse_args()
+    llm = Llama(model_path=args.model, n_gpu_layers=99, n_ctx=16 * 1024, chat_format="chatml", verbose=False,
+                embedding=True)
+    # llm.set_cache(LlamaRAMCache(100 * 1024 ** 2))  # This seems to massively increase RAM usage and slow down overall.
+    sql = SQLitePipeline()
 
-        with self.chat_scope():
-            if self._chat(
-                    "Does the ARTICLE talks of anecdotes, does it tell a story, or is it about culinary knowledge? Your "
-                    "answer must be one word: 'anecdotes', 'story' or 'knowledge'.",
-                    grammar=LlamaGrammar.from_string('root ::= "anecdotes" | "story" | "knowledge"', verbose=False)
-            ) in ["anecdotes", "story"]:
-                return
-
-        # TODO: Alternative idea: Ask all questions at the same time.
-        questions = []
-        with self.chat_scope():
-            question = self._chat("Is there a cooking related QUESTION that the content of this article would answer? "
-                                  'Respond only with the QUESTION which must end with a question mark(?). '
-                                  'Avoid using the words: "article" and "author".')
-
-            while not question.lower().startswith("no") and self._chat(
-                    "Would that be useful to train the answer to this QUESTION to an AI specialized in cooking and food in "
-                    "general? Consider that the AI has a limited memory, therefore, training articles based on anecdotes or "
-                    "stories must be avoided. Don't try to compromize.",
-                    grammar=self.GRAMMAR_YES_NO) == "yes":
-                # TODO: Move this to post-processing
-                # TODO: Try asking the model to rephrase the sentence instead
-                # if not re.search("article|author", question, flags=re.IGNORECASE):
-                questions.append(question)
-                if len(questions) == 4:
-                    _logger.info("Generated too many questions")
-                    break
-                question = self._chat(
-                    'Is there another cooking related QUESTION that the content of this article would answer? '
-                    'Respond only with the QUESTION which must end with a question mark(?), or with "no" if you can\'t think of any new original question. '
-                    'Respond with "no" if your question is similar to a previous one. '
-                    'Your response MUST NOT use the words: "article" nor "author".')
-
-        for question in questions:
-            with self.chat_scope():
-                summary = self._chat(
-                    f'Answer, in your own words, not the author\'s, the question "{question}" from the ARTICLE\'s content. '
-                    f'Explain step-by-step, miticulously. Respond only with your long and detailed answer. '
-                    f'Elaborate in up to 600 words. Avoid using the words: "article" and "author".',
-                    max_tokens=2000)
-
-                yield from self._q_and_q_messages(question, summary)
-
+    training_count = trainer(llm, sql, limit=limit).start()
+    _logger.info(f"Trainer done. It generated {training_count} documents.")
