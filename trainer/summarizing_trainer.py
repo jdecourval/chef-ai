@@ -40,7 +40,7 @@ class SummarizingTrainer(Trainer):
                 for position, conversation in enumerate(self._process_document(document)):
                     yield self._training(conversation=conversation,
                                          conversation_id=idx,
-                                         position=position,
+                                         position=position % 2,  # Assumes _process_document generates many q&a.
                                          source=document
                                          )
             except Exception as e:
