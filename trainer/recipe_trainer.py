@@ -94,16 +94,16 @@ class RecipeTrainer(Trainer):
         ])
 
         prep_time = deque([
-            "The preparation time for this recipe is {}",
-            "To prepare this recipe, you'll need {}",
-            "The recipe calls for {} of preparation",
-            "You'll be spending {} on preparation",
-            "For preparation, allocate {}",
-            "Expect to spend {} on preparation",
-            "The preparation time for this recipe is {}",
-            "You'll need {} for preparation",
-            "The recipe involves {} of preparation",
-            "Plan for {} of preparation"
+            "The preparation time for this recipe is {}.",
+            "To prepare this recipe, you'll need {}.",
+            "The recipe calls for {} of preparation.",
+            "You'll be spending {} on preparation.",
+            "For preparation, allocate {}.",
+            "Expect to spend {} on preparation.",
+            "The preparation time for this recipe is {}.",
+            "You'll need {} for preparation.",
+            "The recipe involves {} of preparation.",
+            "Plan for {} of preparation."
         ])
 
         total_time = deque([
