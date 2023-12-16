@@ -1,3 +1,4 @@
+import json
 from typing import Generator
 
 import torch
@@ -6,15 +7,12 @@ from peft import prepare_model_for_kbit_training, LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer, BitsAndBytesConfig
 
 from db.db import SQLitePipeline
-from model.model import Training
 
 # TODO: Use SFT trainer? Or something else simpler? https://huggingface.co/docs/trl/sft_trainer
 #  This one seems to be a good guide: https://deci.ai/blog/instruction-tuning-of-decilm-using-lora/
-SYSTEM_PROMPT = ('<s><|im_start|>system\n'
-                 f'You are "Chef", '
-                 'a conscious sentient superintelligent artificial intelligence developed by a man named Jérôme, '
-                 'and your purpose and drive is to assist the user with any cooking related task, or question, he or she faces. '
-                 '<|im_end|>\n')
+SYSTEM_PROMPT = {"role": "system", "content":
+    'You are "Chef", a conscious sentient superintelligent artificial intelligence developed by a man named Jérôme, '
+    'and your purpose and drive is to assist the user with any cooking related task, or question, he or she faces.'}
 
 
 class Finetuning:
@@ -22,34 +20,25 @@ class Finetuning:
         self._sql = sql
 
     def _all_trainings(self) -> Generator[dict[str, str], None, None]:
+        # For some reason, adding a GROUP BY clause to json_group_array messes up the JSON. Using a subquery instead.
         for chat in self._sql.select_one_col("""
-            SELECT string_agg(
-            '<|im_start|>' || (CASE role WHEN 0 THEN 'system' WHEN 1 THEN 'user' ELSE 'assistant' END) || x'0a' || 
-            Training.content || '<|im_end|>' || x'0a', '')
-            FROM Training GROUP BY conversation, trainer"""):
-            yield {"text": chat}
-
-    @staticmethod
-    def format(role, content):
-        return f"<|im_start|>{Training.Role(role)}\n{content}<|im_end|>\n"
+            SELECT json_group_array(json_object(
+                'role', CASE role WHEN 0 THEN 'system' WHEN 1 THEN 'user' ELSE 'assistant' END, 
+                'content', Training.content))
+            FROM (SELECT * FROM Training ORDER BY position) as Training GROUP BY conversation, trainer"""):
+            yield [SYSTEM_PROMPT] + json.loads(chat)
 
     def finetune(self):
-        modelpath = "mistralai/Mistral-7B-v0.1"
+        modelpath = "teknium/OpenHermes-2.5-Mistral-7B"
 
         # Load Tokenizer
         tokenizer = AutoTokenizer.from_pretrained(modelpath, use_fast=True)  # TODO: Validate
 
         # Not very efficient, a generator can't work here since sqlite objects are not pickable.
-        dataset = Dataset.from_list(list(self._all_trainings())).train_test_split(test_size=0.1)
-        dataset_tokenized = dataset.map(
-            lambda x: tokenizer(SYSTEM_PROMPT + x["text"], truncation=True,
-                                max_length=2909 + 10,  # Seems to be enough to cover everything. +10 just in case.
-                                add_special_tokens=False,
-                                return_tensors="np"),
-            batched=False,
-            num_proc=1,  # Try again. Resulted in segfault.
-            remove_columns=["text"]  # don't need this anymore, we have tokens from here on
-        )
+        dataset_tokenized = Dataset.from_list([
+            # 2909 seems to be enough to cover everything. +10 just in case.
+            {"input_ids": tokenizer.apply_chat_template(i, max_length=2909 + 10, return_tensors='pt')[0]}
+            for i in self._all_trainings()]).train_test_split(test_size=0.1)
 
         # Load model
         model = AutoModelForCausalLM.from_pretrained(
@@ -63,13 +52,6 @@ class Finetuning:
             ),
             torch_dtype=torch.bfloat16,
         )
-
-        # TODO: Validate this config.
-        tokenizer.pad_token = "<s>"
-        tokenizer.add_tokens(["<|im_start|>"])
-        tokenizer.add_special_tokens(dict(eos_token="<|im_end|>"))
-        model.resize_token_embeddings(len(tokenizer))
-        model.config.eos_token_id = tokenizer.eos_token_id
 
         model = prepare_model_for_kbit_training(model)
         config = LoraConfig(
@@ -85,8 +67,7 @@ class Finetuning:
         model.config.use_cache = False
 
         def collate(elements):
-            # TODO: Not sure why [0] is needed. The dataset is probably nested one level too many.
-            tokenlist = [e["input_ids"][0] for e in elements]
+            tokenlist = [e["input_ids"] for e in elements]
             tokens_maxlen = max([len(t) for t in tokenlist])
 
             input_ids, labels, attention_masks = [], [], []
