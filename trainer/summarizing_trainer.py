@@ -25,10 +25,10 @@ class SummarizingTrainer(Trainer):
 
     def _documents_without_recipe(self) -> Generator[Document, None, None]:
         # octet_length is faster for an approximate length.
-        total = next(self._sql.select("SELECT count(1) as c FROM Document "
-                                      "LEFT OUTER JOIN Recipe ON (Document.id = Recipe.document) "
-                                      "WHERE Recipe.document IS NULL "
-                                      f"AND octet_length(Document.text) > {self.MIN_DOC_SIZE_B}"))["c"]
+        total = next(self._sql.select_one_col("SELECT count(1) as c FROM Document "
+                                              "LEFT OUTER JOIN Recipe ON (Document.id = Recipe.document) "
+                                              "WHERE Recipe.document IS NULL "
+                                              f"AND octet_length(Document.text) > {self.MIN_DOC_SIZE_B}"))
         for document in tqdm((Document(**i) for i in self._sql.select(
                 "SELECT Document.* FROM Document "
                 "LEFT JOIN Recipe ON (Document.id = Recipe.document) "

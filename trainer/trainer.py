@@ -4,7 +4,6 @@ from collections import deque
 from contextlib import contextmanager
 from typing import Generator, Type
 
-import numpy as np
 from llama_cpp import Llama, LlamaGrammar
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
@@ -12,7 +11,6 @@ from tqdm import tqdm
 from db.db import SQLitePipeline
 from model.model import Document, Recipe, Training
 
-# TODO: Use multiple similar variations of each prompt in the training set.
 # TODO: Try this model to generate questions: https://huggingface.co/FPHam/Generate_Question_Mistral_7B
 # TODO: Generate content from charts/pictures.
 # TODO: CoT or similar prompting style. Read Orca paper.
@@ -93,7 +91,7 @@ item ::= "- " [^\r\n\x0b\x0c\x85\u2028\u2029]+ "\n"''', verbose=False)
         pass
 
     def _count_table(self, table: str) -> int:
-        return next(self._sql.select(f"SELECT count(1) as c FROM {table} {self._limit}"))["c"]
+        return next(self._sql.select_one_col(f"SELECT count(1) FROM {table}"))
 
     def _all_recipes(self) -> Generator[Recipe, None, None]:
         # A join would be much faster, but good enough for now.

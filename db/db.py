@@ -26,7 +26,7 @@ class SQLitePipeline:
             fields = [column[0] for column in cursor.description]
             return {key: value for key, value in zip(fields, row)}
 
-        self.connection = sqlite3.connect('results.db', detect_types=sqlite3.PARSE_DECLTYPES)
+        self.connection = sqlite3.connect('results.db', detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
         self.connection.execute("PRAGMA synchronous = normal")
         self.connection.execute("PRAGMA journal_mode = WAL")
         self.connection.execute("PRAGMA foreign_keys = ON")
@@ -59,3 +59,15 @@ class SQLitePipeline:
             # Does this risk leaving the cursor open if the iterator is not fully iterated?
             for i in self.connection.execute(query, *args, **kwargs):
                 yield i
+
+    def select_one_col(self, query: str, *args, **kwargs) -> Generator[Any, None, None]:
+        backup = self.connection.row_factory
+        try:
+            with self.connection:
+                # TODO: Any way to avoid doing this?
+                self.connection.row_factory = lambda cursor, row: row[0]
+                # Does this risk leaving the cursor open if the iterator is not fully iterated?
+                for i in self.connection.execute(query, *args, **kwargs):
+                    yield i
+        finally:
+            self.connection.row_factory = backup
