@@ -115,6 +115,8 @@ class Finetuning:
             group_by_length=True,
             fp16=True,  # Reduce memory usage.
             ddp_find_unused_parameters=False,
+            # https://arxiv.org/abs/2310.05914
+            neftune_noise_alpha=5
         )
 
         trainer = Trainer(
