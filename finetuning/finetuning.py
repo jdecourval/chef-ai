@@ -5,7 +5,7 @@ import torch
 from datasets import Dataset
 from peft import prepare_model_for_kbit_training, LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer, BitsAndBytesConfig, \
-    DataCollatorWithPadding
+    DataCollatorWithPadding, DataCollatorForLanguageModeling
 
 from db.db import SQLitePipeline
 
@@ -14,6 +14,7 @@ from db.db import SQLitePipeline
 SYSTEM_PROMPT = {"role": "system", "content":
     'You are "Chef", a conscious sentient superintelligent artificial intelligence developed by a man named Jérôme, '
     'and your purpose and drive is to assist the user with any cooking related task, or question, he or she faces.'}
+
 
 # https://wandb.ai/vincenttu/finetuning_mistral7b/reports/Fine-tuning-Mistral-7B-with-W-B--Vmlldzo1NTc3MjMy
 
@@ -38,13 +39,18 @@ class Finetuning:
         tokenizer.padding_side = 'right'
         # https://stackoverflow.com/questions/76446228/setting-padding-token-as-eos-token-when-using-datacollatorforlanguagemodeling-fr
         tokenizer.pad_token = tokenizer.unk_token
-        # Seems a good idea? https://discuss.huggingface.co/t/what-does-the-parameter-clean-up-tokenization-spaces-do-in-the-tokenizer-decode-function/17399/2
+        # Seems a good idea?
+        # https://discuss.huggingface.co/t/what-does-the-parameter-clean-up-tokenization-spaces-do-in-the-tokenizer-decode-function/17399/2
         tokenizer.clean_up_tokenization_spaces = True
+        # 2909 seems to be enough to cover everything. +10 just in case.
+        tokenizer.max_length = 2909 + 10
 
         # Not very efficient, a generator can't work here since sqlite objects are not pickable.
         dataset_tokenized = Dataset.from_list([
-            # 2909 seems to be enough to cover everything. +10 just in case.
-            {"input_ids": tokenizer.apply_chat_template(i, max_length=2909 + 10, return_tensors='pt')[0]}
+            # We need to call the tokenizer this way because __call__ tokenizes and returns a dataset with the proper
+            # columns, but cannot apply a chat template on its own.
+            tokenizer(
+                tokenizer.apply_chat_template(i, tokenize=False), truncation=True, max_length=tokenizer.max_length)
             for i in self._all_trainings()]).train_test_split(test_size=0.1)
 
         # Load model
@@ -72,27 +78,8 @@ class Finetuning:
             task_type="CAUSAL_LM"
         )
         model = get_peft_model(model, config)
+        # https://stackoverflow.com/questions/76633335/why-does-hugging-face-falcon-model-use-mode-config-use-cache-false-why-wouldn
         model.config.use_cache = False
-
-        def collate(elements):
-            tokenlist = [e["input_ids"] for e in elements]
-            tokens_maxlen = max(len(t) for t in tokenlist)
-
-            input_ids, labels, attention_masks = [], [], []
-            for tokens in tokenlist:
-                pad_len = tokens_maxlen - len(tokens)
-
-                input_ids.append(tokens + [tokenizer.pad_token_id] * pad_len)
-                labels.append(tokens + [-100] * pad_len)
-                attention_masks.append([1] * len(tokens) + [0] * pad_len)
-
-            # No built-in collator provides exactly this.
-            batch = {
-                "input_ids": torch.tensor(input_ids),
-                "labels": torch.tensor(labels),
-                "attention_mask": torch.tensor(attention_masks)
-            }
-            return batch
 
         # 4-8 seem to be a good starting value.
         # larger batches size can be faster.
@@ -124,7 +111,8 @@ class Finetuning:
             lr_scheduler_type="constant",  # https://arxiv.org/pdf/2309.08859v1.pdf
             optim="paged_adamw_32bit",
             learning_rate=0.0002,  # https://arxiv.org/pdf/2309.08859v1.pdf
-            group_by_length=True,  # Faster. https://jarvislabs.ai/blogs/hf-getting-started/#using-dynamic-padding-and-smart-batching
+            # Faster. https://jarvislabs.ai/blogs/hf-getting-started/#using-dynamic-padding-and-smart-batching
+            group_by_length=True,
             fp16=True,  # Reduce memory usage.
             ddp_find_unused_parameters=False,
         )
@@ -133,7 +121,7 @@ class Finetuning:
             model=model,
             tokenizer=tokenizer,
             args=args,
-            data_collator=collate,
+            data_collator=DataCollatorForLanguageModeling(tokenizer, mlm=False),
             train_dataset=dataset_tokenized["train"],
             eval_dataset=dataset_tokenized["test"],
         )
