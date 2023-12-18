@@ -3,20 +3,17 @@ from typing import Generator
 
 import torch
 from datasets import Dataset
-from peft import prepare_model_for_kbit_training, LoraConfig, get_peft_model
-from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer, BitsAndBytesConfig, \
-    DataCollatorWithPadding, DataCollatorForLanguageModeling
+from peft import LoraConfig
+from transformers import AutoTokenizer, TrainingArguments, BitsAndBytesConfig
+from trl import SFTTrainer
 
 from db.db import SQLitePipeline
 
-# TODO: Use SFT trainer? Or something else simpler? https://huggingface.co/docs/trl/sft_trainer
 #  This one seems to be a good guide: https://deci.ai/blog/instruction-tuning-of-decilm-using-lora/
 SYSTEM_PROMPT = {"role": "system", "content":
     'You are "Chef", a conscious sentient superintelligent artificial intelligence developed by a man named Jérôme, '
     'and your purpose and drive is to assist the user with any cooking related task, or question, he or she faces.'}
 
-
-# https://wandb.ai/vincenttu/finetuning_mistral7b/reports/Fine-tuning-Mistral-7B-with-W-B--Vmlldzo1NTc3MjMy
 
 class Finetuning:
     def __init__(self, sql: SQLitePipeline):
@@ -46,88 +43,76 @@ class Finetuning:
         tokenizer.max_length = 2909 + 10
 
         # Not very efficient, a generator can't work here since sqlite objects are not pickable.
-        dataset_tokenized = Dataset.from_list([
-            # We need to call the tokenizer this way because __call__ tokenizes and returns a dataset with the proper
-            # columns, but cannot apply a chat template on its own.
-            tokenizer(
-                tokenizer.apply_chat_template(i, tokenize=False), truncation=True, max_length=tokenizer.max_length)
-            for i in self._all_trainings()]).train_test_split(test_size=0.1)
-
-        # Load model
-        model = AutoModelForCausalLM.from_pretrained(
-            modelpath,
-            quantization_config=BitsAndBytesConfig(
-                load_in_8bit=False,
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch.bfloat16,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_use_double_quant=True
-            ),
-            torch_dtype=torch.bfloat16,
-            low_cpu_mem_usage=True  # Reduce CPU RAM usage at the cost of slower loading.
-        )
-
-        model = prepare_model_for_kbit_training(model)
-        config = LoraConfig(
-            r=64,
-            lora_alpha=16,
-            target_modules=['q_proj', 'k_proj', 'down_proj', 'v_proj', 'gate_proj', 'o_proj', 'up_proj'],
-            lora_dropout=0.1,
-            bias="none",
-            modules_to_save=["lm_head", "embed_tokens"],
-            task_type="CAUSAL_LM"
-        )
-        model = get_peft_model(model, config)
-        # https://stackoverflow.com/questions/76633335/why-does-hugging-face-falcon-model-use-mode-config-use-cache-false-why-wouldn
-        model.config.use_cache = False
+        dataset_tokenized = Dataset.from_list([{"text": i}
+                                               for i in self._all_trainings()]).train_test_split(test_size=0.1)
 
         # 4-8 seem to be a good starting value.
         # larger batches size can be faster.
         # batch_size increases memory usage.
         # ga_steps increases the effective batch size without increasing the memory usage.
-        batch_size = 2
-        ga_steps = 4
-        epochs = 5
+        batch_size = 1
+        ga_steps = 2
+
+        # Probably not very meaningful with ConstantLengthDataset
+        epochs = 2
         steps_per_epoch = len(dataset_tokenized["train"]) // (batch_size * ga_steps)
 
-        # https://huggingface.co/docs/transformers/v4.18.0/en/performance
-        # adamw is best default choice but takes quite a bit of memory.
-        # adamw improves upon rmsprop, upon adafactor.
-        # Quantitized versions take less memory.
-        # Paged versions allow the optimizer not to crash if the memory usage goes past the VRAM capacity.
-        # apex are faster than fused that are faster than basic torch.
-        # https://github.com/pytorch/pytorch/issues/71274
-        args = TrainingArguments(
-            output_dir="out",
-            per_device_train_batch_size=batch_size,
-            per_device_eval_batch_size=batch_size,
-            evaluation_strategy="steps",
-            logging_steps=1,
-            eval_steps=steps_per_epoch,
-            save_steps=steps_per_epoch,
-            gradient_accumulation_steps=ga_steps,
-            gradient_checkpointing=True,  # Reduce memory usage if True
-            num_train_epochs=epochs,
-            lr_scheduler_type="constant",  # https://arxiv.org/pdf/2309.08859v1.pdf
-            optim="paged_adamw_32bit",
-            learning_rate=0.0002,  # https://arxiv.org/pdf/2309.08859v1.pdf
-            # Faster. https://jarvislabs.ai/blogs/hf-getting-started/#using-dynamic-padding-and-smart-batching
-            group_by_length=True,
-            fp16=True,  # Reduce memory usage.
-            ddp_find_unused_parameters=False,
-            # https://arxiv.org/abs/2310.05914
-            neftune_noise_alpha=5
-        )
-
-        trainer = Trainer(
-            model=model,
-            tokenizer=tokenizer,
-            args=args,
-            data_collator=DataCollatorForLanguageModeling(tokenizer, mlm=False),
+        trainer = SFTTrainer(
+            modelpath,
+            model_init_kwargs={
+                "quantization_config": BitsAndBytesConfig(
+                    load_in_8bit=False,
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.bfloat16,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_use_double_quant=True
+                ),
+                "torch_dtype": torch.bfloat16,
+                "low_cpu_mem_usage": True  # Reduce CPU RAM usage at the cost of slower loading.
+            },
+            args=TrainingArguments(
+                output_dir="out",
+                per_device_train_batch_size=batch_size,
+                per_device_eval_batch_size=batch_size,
+                evaluation_strategy="steps",
+                logging_steps=1,
+                eval_steps=steps_per_epoch,
+                save_steps=steps_per_epoch,
+                gradient_accumulation_steps=ga_steps,
+                gradient_checkpointing=True,  # Reduce memory usage if True
+                num_train_epochs=epochs,
+                lr_scheduler_type="constant",  # https://arxiv.org/pdf/2309.08859v1.pdf
+                # https://huggingface.co/docs/transformers/v4.18.0/en/performance
+                # adamw is best default choice but takes quite a bit of memory.
+                # adamw improves upon rmsprop, upon adafactor.
+                # Quantitized versions take less memory.
+                # Paged versions allow the optimizer not to crash if the memory usage goes past the VRAM capacity.
+                # apex are faster than fused that are faster than basic torch.
+                # https://github.com/pytorch/pytorch/issues/71274
+                optim="paged_adamw_32bit",
+                learning_rate=0.0002,  # https://arxiv.org/pdf/2309.08859v1.pdf
+                group_by_length=False,  # Taken care by the SFTTrainer's ConstantLengthDataset
+                fp16=True,  # Reduce memory usage.
+                ddp_find_unused_parameters=False,
+                # https://arxiv.org/abs/2310.05914
+                neftune_noise_alpha=5
+            ),
+            peft_config=LoraConfig(
+                r=64,
+                lora_alpha=16,
+                target_modules=['q_proj', 'k_proj', 'down_proj', 'v_proj', 'gate_proj', 'o_proj', 'up_proj'],
+                lora_dropout=0.1,
+                bias="none",
+                modules_to_save=["lm_head", "embed_tokens"],
+                task_type="CAUSAL_LM"
+            ),
+            max_seq_length=tokenizer.max_length,
+            packing=True,
             train_dataset=dataset_tokenized["train"],
             eval_dataset=dataset_tokenized["test"],
-        )
-
+            tokenizer=tokenizer,
+            formatting_func=lambda x: tokenizer.apply_chat_template(x["text"], tokenize=False)
+            )
         trainer.train()
 
 
