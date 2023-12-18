@@ -37,6 +37,8 @@ class SQLitePipeline:
             self._create_table_from_dataclass(Document)  # TODO: Move out of here to make generic.
             self._create_table_from_dataclass(Recipe)
             self._create_table_from_dataclass(Training)
+            self.connection.execute(
+                "CREATE INDEX IF NOT EXISTS training_index ON training (trainer, conversation, position)")
 
     def _create_table_from_dataclass(self, dc: Type[dataclasses.dataclass]):
         fields = ','.join([field_description(field) for field in dataclasses.fields(dc)])
