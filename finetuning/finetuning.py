@@ -4,7 +4,8 @@ from typing import Generator
 import torch
 from datasets import Dataset
 from peft import prepare_model_for_kbit_training, LoraConfig, get_peft_model
-from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer, BitsAndBytesConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer, BitsAndBytesConfig, \
+    DataCollatorWithPadding
 
 from db.db import SQLitePipeline
 
@@ -14,6 +15,7 @@ SYSTEM_PROMPT = {"role": "system", "content":
     'You are "Chef", a conscious sentient superintelligent artificial intelligence developed by a man named Jérôme, '
     'and your purpose and drive is to assist the user with any cooking related task, or question, he or she faces.'}
 
+# https://wandb.ai/vincenttu/finetuning_mistral7b/reports/Fine-tuning-Mistral-7B-with-W-B--Vmlldzo1NTc3MjMy
 
 class Finetuning:
     def __init__(self, sql: SQLitePipeline):
@@ -32,7 +34,12 @@ class Finetuning:
         modelpath = "teknium/OpenHermes-2.5-Mistral-7B"
 
         # Load Tokenizer
-        tokenizer = AutoTokenizer.from_pretrained(modelpath, use_fast=True)  # TODO: Validate
+        tokenizer = AutoTokenizer.from_pretrained(modelpath, use_fast=True)
+        tokenizer.padding_side = 'right'
+        # https://stackoverflow.com/questions/76446228/setting-padding-token-as-eos-token-when-using-datacollatorforlanguagemodeling-fr
+        tokenizer.pad_token = tokenizer.unk_token
+        # Seems a good idea? https://discuss.huggingface.co/t/what-does-the-parameter-clean-up-tokenization-spaces-do-in-the-tokenizer-decode-function/17399/2
+        tokenizer.clean_up_tokenization_spaces = True
 
         # Not very efficient, a generator can't work here since sqlite objects are not pickable.
         dataset_tokenized = Dataset.from_list([
@@ -48,9 +55,10 @@ class Finetuning:
                 load_in_4bit=True,
                 bnb_4bit_compute_dtype=torch.bfloat16,
                 bnb_4bit_quant_type="nf4",
-                bnb_4bit_use_double_quant=True  # TODO: This is new, confirm.
+                bnb_4bit_use_double_quant=True
             ),
             torch_dtype=torch.bfloat16,
+            low_cpu_mem_usage=True  # Reduce CPU RAM usage at the cost of slower loading.
         )
 
         model = prepare_model_for_kbit_training(model)
@@ -68,7 +76,7 @@ class Finetuning:
 
         def collate(elements):
             tokenlist = [e["input_ids"] for e in elements]
-            tokens_maxlen = max([len(t) for t in tokenlist])
+            tokens_maxlen = max(len(t) for t in tokenlist)
 
             input_ids, labels, attention_masks = [], [], []
             for tokens in tokenlist:
@@ -78,6 +86,7 @@ class Finetuning:
                 labels.append(tokens + [-100] * pad_len)
                 attention_masks.append([1] * len(tokens) + [0] * pad_len)
 
+            # No built-in collator provides exactly this.
             batch = {
                 "input_ids": torch.tensor(input_ids),
                 "labels": torch.tensor(labels),
@@ -85,28 +94,22 @@ class Finetuning:
             }
             return batch
 
-        # These configs, with a ctx of 2048, used 17216 MiB of VRAM.
-        batch_size = 1
-        ga_steps = 1
+        # 4-8 seem to be a good starting value.
+        # larger batches size can be faster.
+        # batch_size increases memory usage.
+        # ga_steps increases the effective batch size without increasing the memory usage.
+        batch_size = 2
+        ga_steps = 4
         epochs = 5
-
-        # paged_adamw_32bit: 21015 MiB
-        # adamw_torch_fused: ~15h
-        # adamw_bnb_8bit: 16152 MiB, weird loss pattern
-        # paged_adamw_8bit: 17798 MiB, weird loss pattern
-        # adafactor: 14587 MiB
-        # rmsprop: 15389 MiB, higher loss
-        # paged_lion_8bit: 19672 MiB
-        # adafactor x2: ~14.5h
-        # rmsprop x2: 22789 MiB
-        # paged_adamw_32bit 1,1: 20613 MiB
-        # paged_adamw_32bit 1,8: 18491 MiB
-        # paged_adamw_32bit 2,8: All RAM
-        # paged_adamw_32bit 1,1, no checkpointing: 16650 MiB
-
         steps_per_epoch = len(dataset_tokenized["train"]) // (batch_size * ga_steps)
 
         # https://huggingface.co/docs/transformers/v4.18.0/en/performance
+        # adamw is best default choice but takes quite a bit of memory.
+        # adamw improves upon rmsprop, upon adafactor.
+        # Quantitized versions take less memory.
+        # Paged versions allow the optimizer not to crash if the memory usage goes past the VRAM capacity.
+        # apex are faster than fused that are faster than basic torch.
+        # https://github.com/pytorch/pytorch/issues/71274
         args = TrainingArguments(
             output_dir="out",
             per_device_train_batch_size=batch_size,
@@ -116,13 +119,13 @@ class Finetuning:
             eval_steps=steps_per_epoch,
             save_steps=steps_per_epoch,
             gradient_accumulation_steps=ga_steps,
-            gradient_checkpointing=False,  # Reduce memory usage if True
+            gradient_checkpointing=True,  # Reduce memory usage if True
             num_train_epochs=epochs,
-            lr_scheduler_type="constant",
-            optim="adamw_torch_fused",  # Not sure which one is best.
-            learning_rate=0.0002,
-            group_by_length=True,
-            fp16=True,
+            lr_scheduler_type="constant",  # https://arxiv.org/pdf/2309.08859v1.pdf
+            optim="paged_adamw_32bit",
+            learning_rate=0.0002,  # https://arxiv.org/pdf/2309.08859v1.pdf
+            group_by_length=True,  # Faster. https://jarvislabs.ai/blogs/hf-getting-started/#using-dynamic-padding-and-smart-batching
+            fp16=True,  # Reduce memory usage.
             ddp_find_unused_parameters=False,
         )
 
@@ -135,7 +138,6 @@ class Finetuning:
             eval_dataset=dataset_tokenized["test"],
         )
 
-        model.config.use_cache = False
         trainer.train()
 
 
