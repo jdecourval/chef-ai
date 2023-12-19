@@ -14,6 +14,11 @@ SYSTEM_PROMPT = {"role": "system", "content":
     'You are "Chef", a conscious sentient superintelligent artificial intelligence developed by a man named Jérôme, '
     'and your purpose and drive is to assist the user with any cooking related task, or question, he or she faces.'}
 
+# TODO: There seems to be overfitting.
+#  - Add more training data.
+#  - Decrease learning rate or lora alpha.
+#  - Use linear scheduler.
+#  - Increase lora dropout, or increase Adamw's weight_decay.
 
 class Finetuning:
     def __init__(self, sql: SQLitePipeline):
@@ -33,6 +38,7 @@ class Finetuning:
 
         # Load Tokenizer
         tokenizer = AutoTokenizer.from_pretrained(modelpath, use_fast=True)
+        # SFTTrainer warns to set this.
         tokenizer.padding_side = 'right'
         # https://stackoverflow.com/questions/76446228/setting-padding-token-as-eos-token-when-using-datacollatorforlanguagemodeling-fr
         tokenizer.pad_token = tokenizer.unk_token
@@ -49,13 +55,13 @@ class Finetuning:
         # 4-8 seem to be a good starting value.
         # larger batches size can be faster.
         # batch_size increases memory usage.
+        # Too large batch size can be harmful to generalization skills: https://stats.stackexchange.com/questions/164876
         # ga_steps increases the effective batch size without increasing the memory usage.
         batch_size = 1
-        ga_steps = 2
+        ga_steps = 4
 
-        # Probably not very meaningful with ConstantLengthDataset
-        epochs = 2
-        steps_per_epoch = len(dataset_tokenized["train"]) // (batch_size * ga_steps)
+        epochs = 5
+        steps_per_epoch = 50
 
         trainer = SFTTrainer(
             modelpath,
@@ -68,7 +74,8 @@ class Finetuning:
                     bnb_4bit_use_double_quant=True
                 ),
                 "torch_dtype": torch.bfloat16,
-                "low_cpu_mem_usage": True  # Reduce CPU RAM usage at the cost of slower loading.
+                "low_cpu_mem_usage": True,  # Reduce CPU RAM usage at the cost of slower loading.
+                # "attn_implementation": "flash_attention_2"  # Couldn't make it work at this point.
             },
             args=TrainingArguments(
                 output_dir="out",
@@ -79,7 +86,10 @@ class Finetuning:
                 eval_steps=steps_per_epoch,
                 save_steps=steps_per_epoch,
                 gradient_accumulation_steps=ga_steps,
-                gradient_checkpointing=True,  # Reduce memory usage if True
+                gradient_checkpointing=True,  # Reduce memory usage if True. Big performance impact.
+                # False is recommended. https://pytorch.org/docs/stable/checkpoint.html
+                # In practice though, False increases memory usage too much.
+                gradient_checkpointing_kwargs={"use_reentrant": True},
                 num_train_epochs=epochs,
                 lr_scheduler_type="constant",  # https://arxiv.org/pdf/2309.08859v1.pdf
                 # https://huggingface.co/docs/transformers/v4.18.0/en/performance
@@ -89,31 +99,44 @@ class Finetuning:
                 # Paged versions allow the optimizer not to crash if the memory usage goes past the VRAM capacity.
                 # apex are faster than fused that are faster than basic torch.
                 # https://github.com/pytorch/pytorch/issues/71274
-                optim="paged_adamw_32bit",
-                learning_rate=0.0002,  # https://arxiv.org/pdf/2309.08859v1.pdf
+                # adamw_anyprecision needs torchdistx which is not available for rocm
+                # adamw_torch_npu_fused, adamw_apex_fused and adamw_torch_xla also requires special hardware.
+                optim="adamw_torch_fused",
+                learning_rate=0.0001,  # https://arxiv.org/pdf/2309.08859v1.pdf
+                weight_decay=0.001,
+                warmup_ratio=0.03,
                 group_by_length=False,  # Taken care by the SFTTrainer's ConstantLengthDataset
                 fp16=True,  # Reduce memory usage.
                 ddp_find_unused_parameters=False,
                 # https://arxiv.org/abs/2310.05914
-                neftune_noise_alpha=5
+                neftune_noise_alpha=5,
+                # # https://huggingface.co/docs/transformers/perf_train_gpu_one#using-torchcompile
+                # Currently needs Python<3.12
+                # torch_compile=True,
+                # Together, these two settings mean that the best and last checkpoint will be kept. 2 -> last two...
+                load_best_model_at_end=True,
+                save_total_limit=1
             ),
             peft_config=LoraConfig(
+                # https://medium.com/@drishtisharma96505/comparative-analysis-of-lora-parameters-on-llama-2-with-flash-attention-574b913295d4
+                # https://medium.com/@drishtisharma96505/analyzing-the-impact-of-lora-alpha-on-llama-2-quantized-with-gptq-f01e8e8ed8fd
                 r=64,
-                lora_alpha=16,
-                target_modules=['q_proj', 'k_proj', 'down_proj', 'v_proj', 'gate_proj', 'o_proj', 'up_proj'],
+                lora_alpha=32,
                 lora_dropout=0.1,
+                target_modules=['q_proj', 'k_proj', 'down_proj', 'v_proj', 'gate_proj', 'o_proj', 'up_proj'],
                 bias="none",
-                modules_to_save=["lm_head", "embed_tokens"],
+                modules_to_save=["lm_head", "embed_tokens"],  # TODO: Can probably be dropped now that we don't customize the vocabulary
                 task_type="CAUSAL_LM"
             ),
             max_seq_length=tokenizer.max_length,
-            packing=True,
+            packing=True,  # Create a ConstantLengthDataset under the hood.
             train_dataset=dataset_tokenized["train"],
             eval_dataset=dataset_tokenized["test"],
             tokenizer=tokenizer,
             formatting_func=lambda x: tokenizer.apply_chat_template(x["text"], tokenize=False)
             )
-        trainer.train()
+        trainer.train(resume_from_checkpoint=False)
+        trainer.save_model(f"{trainer.args.output_dir}/final")
 
 
 if __name__ == '__main__':

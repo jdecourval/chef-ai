@@ -15,13 +15,10 @@ base_model = AutoModelForCausalLM.from_pretrained(
 )
 
 tokenizer = AutoTokenizer.from_pretrained(base_path)
-
-# Add/set tokens (same 5 lines of code we used before training)
-tokenizer.pad_token = "<s>"
-tokenizer.add_tokens(["<|im_start|>"])
-tokenizer.add_special_tokens(dict(eos_token="<|im_end|>"))
-base_model.resize_token_embeddings(len(tokenizer))
-base_model.config.eos_token_id = tokenizer.eos_token_id
+tokenizer.padding_side = 'right'
+tokenizer.pad_token = tokenizer.unk_token
+tokenizer.clean_up_tokenization_spaces = True
+tokenizer.max_length = 2909 + 10
 
 # Load LoRA adapter and merge
 model = PeftModel.from_pretrained(base_model, adapter_path)
