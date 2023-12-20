@@ -16,7 +16,7 @@ from db.db_utils import DataclassIterableMixin
 class Document(DataclassIterableMixin):
     # TODO: Move somewhere else
     @staticmethod
-    def from_html(html: str):
+    def from_html(html: str, source: str):
         selector = Selector(html)
         metadata = json.loads(selector.css("script#schema-lifestyle_1-0::text").get(), strict=False)[0]
 
@@ -25,6 +25,7 @@ class Document(DataclassIterableMixin):
             text=unescape("".join(selector.css("article .text-passage p.comp::text").getall()).strip()),
             subtitle=unescape(selector.xpath('//meta[@name="description"]/@content').get()),
             author=unescape(metadata["author"][0]["name"]),
+            source=source
         )
         self.recipe = Recipe.build(self, metadata) if metadata["@type"][0] == "Recipe" else None
         assert self.text, "Empty document"
@@ -33,6 +34,7 @@ class Document(DataclassIterableMixin):
     title: str
     text: str
     author: str
+    source: str = None
     subtitle: str = None
     id: int = field(metadata="PRIMARY KEY", default=None)
 

@@ -131,6 +131,29 @@ item ::= "- " [^\r\n\x0b\x0c\x85\u2028\u2029]+ "\n"''', verbose=False)
         return count
 
 
+class RecipeTrainerBase(Trainer):
+    def __iter__(self) -> Generator[Training, None, None]:
+        for idx, recipe in enumerate(self._all_recipes()):
+            if next(self._sql.select_one_col("SELECT count(1) FROM Training "
+                                             "WHERE source=? AND trainer='RecipeEvaluatorTrainer'", (recipe.document,))):
+                _logger.info(f"Skipping over already processed recipe: {recipe}")
+                continue
+            try:
+                for position, conversation in enumerate(self._process_document(recipe)):
+                    yield self._training(conversation=conversation,
+                                         conversation_id=idx,
+                                         position=position,
+                                         source=recipe.document
+                                         )
+            except:
+                _logger.exception(f"Failed to process recipe: {recipe}")
+            self._reset()
+
+    @abc.abstractmethod
+    def _process_document(self, recipe: Recipe) -> Generator[dict[str, str], None, None]:
+        pass
+
+
 def main(trainer: Type[Trainer], limit=False):
     import logging
     import argparse

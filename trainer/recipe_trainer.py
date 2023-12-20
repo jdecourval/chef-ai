@@ -4,13 +4,13 @@ from typing import override, Generator
 
 import humanize
 
-from model.model import Training, Recipe
-from trainer.trainer import Trainer, next_variation, main
+from model.model import Recipe
+from trainer.trainer import next_variation, main, RecipeTrainerBase
 
 _logger = logging.getLogger(__name__)
 
 
-class RecipeTrainer(Trainer):
+class RecipeTrainer(RecipeTrainerBase):
     MIN_SCORE = 4.0
 
     class Variations:
@@ -147,19 +147,6 @@ class RecipeTrainer(Trainer):
         ])
 
     @override
-    def __iter__(self) -> Generator[Training, None, None]:
-        for idx, recipe in enumerate(self._all_recipes()):
-            try:
-                for position, conversation in enumerate(self._process_document(recipe)):
-                    yield self._training(conversation=conversation,
-                                         conversation_id=idx,
-                                         position=position,
-                                         source=recipe.document
-                                         )
-            except Exception as e:
-                _logger.exception(f"Failed to process recipe: {recipe.document.title}", e)
-            self._reset()
-
     def _process_document(self, recipe: Recipe) -> Generator[dict[str, str], None, None]:
         if recipe.review_score is None or recipe.review_score < self.MIN_SCORE:
             return

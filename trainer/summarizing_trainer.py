@@ -4,6 +4,7 @@ import re
 from typing import override, Generator
 
 import numpy as np
+from anyio import create_task_group
 from llama_cpp import LlamaGrammar
 from sentence_transformers.util import cos_sim
 from tqdm import tqdm
@@ -40,6 +41,11 @@ class SummarizingTrainer(Trainer):
     @override
     def __iter__(self) -> Generator[Training, None, None]:
         for idx, document in enumerate(self._documents_without_recipe()):
+            if next(self._sql.select_one_col(
+                    "SELECT count(1) FROM Training WHERE source=? AND trainer='SummarizingTrainer'", (document,))):
+                _logger.info(f"Skipping over already processed document: {document}")
+                continue
+
             try:
                 for position, conversation in enumerate(self._process_document(document)):
                     yield self._training(conversation=conversation,

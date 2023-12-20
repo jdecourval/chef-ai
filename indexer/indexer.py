@@ -13,17 +13,18 @@ _logger = logging.getLogger(__name__)
 
 
 class Indexer:
-    def __init__(self, sql):
+    def __init__(self, sql: SQLitePipeline):
         self._sql = sql
+        self.indexed = set(self._sql.select_one_col("SELECT source from Document"))
 
     def insert_db(self, document: Document):
         self._sql.insert(document)
         if document.recipe:
             self._sql.insert(document.recipe)
 
-    def index_html(self, html):
+    def index_html(self, html, source):
         try:
-            document = Document.from_html(html)
+            document = Document.from_html(html, source)
         except json.decoder.JSONDecodeError as e:
             # Sometimes, there's a " not properly escaped that causes parsing to fail.
             if "Expecting ',' delimiter" in e.msg:
@@ -36,13 +37,16 @@ class Indexer:
             self.insert_db(document)
 
     def index_path(self, path):
+        if path in self.indexed:
+            _logger.info(f"Skipped already parsed document: {path}")
+            return
         with open(path, "r") as file:
             html = file.read()
         if not html:
             _logger.error(f"Found a corrupted file, removing it: {path}")
             os.remove(path)
             return
-        self.index_html(html)
+        self.index_html(html, path)
 
     def start(self, results_folder="results"):
         for path in tqdm(list(Path(results_folder).iterdir())):
