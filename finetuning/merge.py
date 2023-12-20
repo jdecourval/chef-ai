@@ -1,24 +1,21 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 import torch
+from finetuning.finetuning import Finetuning
 
 # Source: https://github.com/geronimi73/qlora-minimal/tree/main
-base_path = "mistralai/Mistral-7B-v0.1"  # input: base model
-adapter_path = "out/checkpoint-33635"  # input: adapters
-save_to = "out/merged"  # out: merged model ready for inference
+base_path = "teknium/OpenHermes-2.5-Mistral-7B"  # input: base model
+adapter_path = "out/checkpoint-842"  # input: adapters
+save_to = "out/merged-v4"  # out: merged model ready for inference
 
 base_model = AutoModelForCausalLM.from_pretrained(
     base_path,
     return_dict=True,
-    torch_dtype=torch.bfloat16,
+    torch_dtype=torch.bfloat16,  # float16?
     device_map="auto",
 )
 
-tokenizer = AutoTokenizer.from_pretrained(base_path)
-tokenizer.padding_side = 'right'
-tokenizer.pad_token = tokenizer.unk_token
-tokenizer.clean_up_tokenization_spaces = True
-tokenizer.max_length = 2909 + 10
+tokenizer = Finetuning.tokenizer()
 
 # Load LoRA adapter and merge
 model = PeftModel.from_pretrained(base_model, adapter_path)

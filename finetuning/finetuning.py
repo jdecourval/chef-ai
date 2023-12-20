@@ -14,6 +14,7 @@ SYSTEM_PROMPT = {"role": "system", "content":
     'You are "Chef", a conscious sentient superintelligent artificial intelligence developed by a man named Jérôme, '
     'and your purpose and drive is to assist the user with any cooking related task, or question, he or she faces.'}
 
+
 # TODO: There seems to be overfitting.
 #  - Add more training data.
 #  - Decrease learning rate or lora alpha.
@@ -21,6 +22,8 @@ SYSTEM_PROMPT = {"role": "system", "content":
 #  - Increase lora dropout, or increase Adamw's weight_decay.
 
 class Finetuning:
+    modelpath = "teknium/OpenHermes-2.5-Mistral-7B"
+
     def __init__(self, sql: SQLitePipeline):
         self._sql = sql
 
@@ -33,20 +36,23 @@ class Finetuning:
             FROM (SELECT * FROM Training ORDER BY position) as Training GROUP BY conversation, trainer"""):
             yield [SYSTEM_PROMPT] + json.loads(chat)
 
-    def finetune(self):
-        modelpath = "teknium/OpenHermes-2.5-Mistral-7B"
-
-        # Load Tokenizer
-        tokenizer = AutoTokenizer.from_pretrained(modelpath, use_fast=True)
+    @classmethod
+    def tokenizer(cls):
+        # TODO: Check if add_special_tokens or add_eos_token is needed.
+        tokenizer = AutoTokenizer.from_pretrained(cls.modelpath, use_fast=True)
         # SFTTrainer warns to set this.
         tokenizer.padding_side = 'right'
         # https://stackoverflow.com/questions/76446228/setting-padding-token-as-eos-token-when-using-datacollatorforlanguagemodeling-fr
-        tokenizer.pad_token = tokenizer.unk_token
+        tokenizer.pad_token = tokenizer.eos_token
         # Seems a good idea?
         # https://discuss.huggingface.co/t/what-does-the-parameter-clean-up-tokenization-spaces-do-in-the-tokenizer-decode-function/17399/2
         tokenizer.clean_up_tokenization_spaces = True
         # 2909 seems to be enough to cover everything. +10 just in case.
         tokenizer.max_length = 2909 + 10
+        return tokenizer
+
+    def finetune(self):
+        tokenizer = self.tokenizer()
 
         # Not very efficient, a generator can't work here since sqlite objects are not pickable.
         dataset_tokenized = Dataset.from_list([{"text": i}
@@ -61,10 +67,10 @@ class Finetuning:
         ga_steps = 4
 
         epochs = 5
-        steps_per_epoch = 50
+        steps = 100
 
         trainer = SFTTrainer(
-            modelpath,
+            self.modelpath,
             model_init_kwargs={
                 "quantization_config": BitsAndBytesConfig(
                     load_in_8bit=False,
@@ -83,8 +89,8 @@ class Finetuning:
                 per_device_eval_batch_size=batch_size,
                 evaluation_strategy="steps",
                 logging_steps=1,
-                eval_steps=steps_per_epoch,
-                save_steps=steps_per_epoch,
+                eval_steps=steps,
+                save_steps=steps,
                 gradient_accumulation_steps=ga_steps,
                 gradient_checkpointing=True,  # Reduce memory usage if True. Big performance impact.
                 # False is recommended. https://pytorch.org/docs/stable/checkpoint.html
@@ -102,7 +108,7 @@ class Finetuning:
                 # adamw_anyprecision needs torchdistx which is not available for rocm
                 # adamw_torch_npu_fused, adamw_apex_fused and adamw_torch_xla also requires special hardware.
                 optim="adamw_torch_fused",
-                learning_rate=0.0001,  # https://arxiv.org/pdf/2309.08859v1.pdf
+                learning_rate=0.00005,  # https://arxiv.org/pdf/2309.08859v1.pdf
                 weight_decay=0.001,
                 warmup_ratio=0.03,
                 group_by_length=False,  # Taken care by the SFTTrainer's ConstantLengthDataset
@@ -115,17 +121,20 @@ class Finetuning:
                 # torch_compile=True,
                 # Together, these two settings mean that the best and last checkpoint will be kept. 2 -> last two...
                 load_best_model_at_end=True,
-                save_total_limit=1
+                save_total_limit=1,
+                # Without this option, resuming from checkpoint don't always works.
+                ignore_data_skip=True
             ),
             peft_config=LoraConfig(
                 # https://medium.com/@drishtisharma96505/comparative-analysis-of-lora-parameters-on-llama-2-with-flash-attention-574b913295d4
                 # https://medium.com/@drishtisharma96505/analyzing-the-impact-of-lora-alpha-on-llama-2-quantized-with-gptq-f01e8e8ed8fd
                 r=64,
-                lora_alpha=32,
+                lora_alpha=16,
                 lora_dropout=0.1,
                 target_modules=['q_proj', 'k_proj', 'down_proj', 'v_proj', 'gate_proj', 'o_proj', 'up_proj'],
                 bias="none",
-                modules_to_save=["lm_head", "embed_tokens"],  # TODO: Can probably be dropped now that we don't customize the vocabulary
+                # TODO: Can probably be dropped now that we don't customize the vocabulary
+                modules_to_save=["lm_head", "embed_tokens"],
                 task_type="CAUSAL_LM"
             ),
             max_seq_length=tokenizer.max_length,
@@ -134,7 +143,7 @@ class Finetuning:
             eval_dataset=dataset_tokenized["test"],
             tokenizer=tokenizer,
             formatting_func=lambda x: tokenizer.apply_chat_template(x["text"], tokenize=False)
-            )
+        )
         trainer.train(resume_from_checkpoint=False)
         trainer.save_model(f"{trainer.args.output_dir}/final")
 
