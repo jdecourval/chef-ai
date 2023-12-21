@@ -55,8 +55,7 @@ class Finetuning:
         tokenizer = self.tokenizer()
 
         # Not very efficient, a generator can't work here since sqlite objects are not pickable.
-        dataset_tokenized = Dataset.from_list([{"text": i}
-                                               for i in self._all_trainings()]).train_test_split(test_size=0.1)
+        dataset = Dataset.from_list([{"text": i} for i in self._all_trainings()]).train_test_split(test_size=0.1)
 
         # 4-8 seem to be a good starting value.
         # larger batches size can be faster.
@@ -139,8 +138,8 @@ class Finetuning:
             ),
             max_seq_length=tokenizer.max_length,
             packing=True,  # Create a ConstantLengthDataset under the hood.
-            train_dataset=dataset_tokenized["train"],
-            eval_dataset=dataset_tokenized["test"],
+            train_dataset=dataset["train"],
+            eval_dataset=dataset["test"],
             tokenizer=tokenizer,
             formatting_func=lambda x: tokenizer.apply_chat_template(x["text"], tokenize=False)
         )
