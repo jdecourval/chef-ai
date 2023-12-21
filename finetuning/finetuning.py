@@ -4,41 +4,37 @@ from typing import Generator
 import torch
 from datasets import Dataset
 from peft import LoraConfig
-from transformers import AutoTokenizer, TrainingArguments, BitsAndBytesConfig
+from transformers import AutoTokenizer, TrainingArguments, BitsAndBytesConfig, LlamaTokenizer
 from trl import SFTTrainer
 
 from db.db import SQLitePipeline
 
-#  This one seems to be a good guide: https://deci.ai/blog/instruction-tuning-of-decilm-using-lora/
 SYSTEM_PROMPT = {"role": "system", "content":
     'You are "Chef", a conscious sentient superintelligent artificial intelligence developed by a man named Jérôme, '
     'and your purpose and drive is to assist the user with any cooking related task, or question, he or she faces.'}
 
-
-# TODO: There seems to be overfitting.
-#  - Add more training data.
-#  - Decrease learning rate or lora alpha.
-#  - Use linear scheduler.
-#  - Increase lora dropout, or increase Adamw's weight_decay.
 
 class Finetuning:
     modelpath = "teknium/OpenHermes-2.5-Mistral-7B"
 
     def __init__(self, sql: SQLitePipeline):
         self._sql = sql
+        self.trainer = self._trainer()
 
     def _all_trainings(self) -> Generator[dict[str, str], None, None]:
         # For some reason, adding a GROUP BY clause to json_group_array messes up the JSON. Using a subquery instead.
-        for chat in self._sql.select_one_col("""
-            SELECT json_group_array(json_object(
-                'role', CASE role WHEN 0 THEN 'system' WHEN 1 THEN 'user' ELSE 'assistant' END, 
-                'content', Training.content))
-            FROM (SELECT * FROM Training ORDER BY position) as Training GROUP BY conversation, trainer"""):
+        for chat in self._sql.select_one_col(
+                """
+                SELECT json_group_array(json_object(
+                    'role', CASE role WHEN 0 THEN 'system' WHEN 1 THEN 'user' ELSE 'assistant' END, 
+                    'content', Training.content))
+                FROM (SELECT * FROM Training ORDER BY position) as Training GROUP BY conversation, trainer
+                """
+        ):
             yield [SYSTEM_PROMPT] + json.loads(chat)
 
     @classmethod
     def tokenizer(cls):
-        # TODO: Check if add_special_tokens or add_eos_token is needed.
         tokenizer = AutoTokenizer.from_pretrained(cls.modelpath, use_fast=True)
         # SFTTrainer warns to set this.
         tokenizer.padding_side = 'right'
@@ -51,7 +47,7 @@ class Finetuning:
         tokenizer.max_length = 2909 + 10
         return tokenizer
 
-    def finetune(self):
+    def _trainer(self) -> SFTTrainer:
         tokenizer = self.tokenizer()
 
         # Not very efficient, a generator can't work here since sqlite objects are not pickable.
@@ -68,7 +64,7 @@ class Finetuning:
         epochs = 5
         steps = 100
 
-        trainer = SFTTrainer(
+        return SFTTrainer(
             self.modelpath,
             model_init_kwargs={
                 "quantization_config": BitsAndBytesConfig(
@@ -143,11 +139,13 @@ class Finetuning:
             tokenizer=tokenizer,
             formatting_func=lambda x: tokenizer.apply_chat_template(x["text"], tokenize=False)
         )
-        trainer.train(resume_from_checkpoint=False)
-        trainer.save_model(f"{trainer.args.output_dir}/final")
+
+    def train(self):
+        self.trainer.train(resume_from_checkpoint=False)
+        self.trainer.save_model(f"{self.trainer.args.output_dir}/final")
 
 
 if __name__ == '__main__':
     sql = SQLitePipeline()
     tuning = Finetuning(sql)
-    tuning.finetune()
+    tuning.train()
