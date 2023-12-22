@@ -38,6 +38,9 @@ class Document(DataclassIterableMixin):
     subtitle: str = None
     id: int = field(metadata="PRIMARY KEY", default=None)
 
+    def __repr__(self):
+        return self.title
+
 
 @dataclass
 class Recipe(DataclassIterableMixin):

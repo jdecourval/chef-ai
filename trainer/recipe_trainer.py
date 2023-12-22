@@ -1,6 +1,6 @@
 import logging
 from collections import deque
-from typing import override, Generator
+from typing import override, AsyncGenerator
 
 import humanize
 
@@ -146,29 +146,20 @@ class RecipeTrainer(RecipeTrainerBase):
             "How do I make sure this recipe I found in the book is successful?"
         ])
 
-    @override
-    def _process_document(self, recipe: Recipe) -> Generator[dict[str, str], None, None]:
-        if recipe.review_score is None or recipe.review_score < self.MIN_SCORE:
-            return
-
-        doc = recipe.document
-        self._chatlog.append({
-            "role": "user",
-            "content": "Starting after the line break is a RECIPE by a food magazine.\n\n" + doc.text
-        })
-
-        # TODO: Optimize this
+    async def _secrets(self):
+        # TODO: Optimize
         secrets = []
         with self.chat_scope():
             # Maybe redundant with SummarizingTrainer? Probably different enough.
-            answer = self._chat(
+            answer = await self.chat.chat(
                 "Is there a secret, a key technique, or a special ingredient to this recipe that contributes to its success?")
-            if self._chat("Is that common knowledge, or obvious to most people?", grammar=self.GRAMMAR_YES_NO) == "no":
+            if await self.chat.chat("Is that common knowledge, or obvious to most people?",
+                                    grammar=self.GRAMMAR_YES_NO) == "no":
                 secrets.append(answer)
 
                 for _ in range(3):
-                    answer = self._chat("Anything else?")
-                    if answer.lower().startswith("no") or self._chat(
+                    answer = await self.chat.chat("Anything else?")
+                    if answer.lower().startswith("no") or await self.chat.chat(
                             "Is that common knowledge, or obvious to most people?",
                             grammar=self.GRAMMAR_YES_NO) == "yes":
                         break
@@ -176,50 +167,80 @@ class RecipeTrainer(RecipeTrainerBase):
                 else:
                     _logger.info("Generated too many techniques from the recipe.")
 
-        title_variation = next_variation(self.Variations.propose_recipe)
-        title = self._chat(
-            f'Optional context: The original title of the recipe is: "{doc.title}". '
-            f'Answer the question: What is being cooked in this recipe? '
-            f'Your answer must complete the sentence: "{title_variation[0]}". '
-            "The sentence includes a template marker []. You must substitute the template marker by your answer. "
-            "Respond with the completed sentence only.",
-            max_tokens=20) + title_variation[1]
-        yield from self._q_and_q_messages(title, repr(recipe))
-        yield from self._q_and_q_messages(next_variation(self.Variations.give_nutrition), recipe.format_nutrition())
-
-        if recipe.cuisine:
-            yield from self._q_and_q_messages(
-                next_variation(self.Variations.which_cuisine),
-                # TODO: prompt: Write a sentence that briefly answers the question considering the answer is {}.
-                next_variation(self.Variations.cuisine_answer) + (", ".join(recipe.cuisine[:-1]) + " and " +
-                                                                  recipe.cuisine[-1] if len(recipe.cuisine) > 1
-                                                                  else recipe.cuisine[0])
-            )
-
-        if recipe.category:
-            yield from self._q_and_q_messages(
-                next_variation(self.Variations.which_category),
-                # TODO: prompt: Write a sentence that briefly answers the question considering the answer is {}.
-                next_variation(self.Variations.category_answer) + (", ".join(recipe.category[:-1]) + " and " +
-                                                                   recipe.category[-1] if len(recipe.category) > 1
-                                                                   else recipe.category[0]))
-
-        if recipe.prep_time or recipe.total_time:
-            if recipe.prep_time and recipe.total_time:
-                time_answer = next_variation(self.Variations.prep_and_total_time).format(
-                    humanize.naturaldelta(recipe.prep_time),
-                    humanize.naturaldelta(recipe.total_time))
-            elif recipe.prep_time:
-                time_answer = next_variation(self.Variations.prep_time).format(humanize.naturaldelta(recipe.prep_time))
-            else:
-                time_answer = next_variation(self.Variations.total_time).format(
-                    humanize.naturaldelta(recipe.total_time))
-
-            yield from self._q_and_q_messages(next_variation(self.Variations.how_long_question), time_answer)
-
         if secrets:
-            yield from self._q_and_q_messages(next_variation(self.Variations.how_to_suceed), self._prompt(
-                "Summarize, simplify, and improve the wording of the following text:\n\n" + "\n".join(secrets)))
+            for message in self._q_and_q_messages(
+                    next_variation(self.Variations.how_to_suceed),
+                    await self._prompt(
+                        "Summarize, simplify, and improve the wording of the following text:\n\n" + "\n".join(secrets))
+            ):
+                yield message
+
+    @override
+    async def _process_document(self, recipe: Recipe) -> AsyncGenerator[dict[str, str], None]:
+        if recipe.review_score is None or recipe.review_score < self.MIN_SCORE:
+            return
+
+        doc = recipe.document
+        with self.chat_scope():
+            self.chat.append({
+                "role": "user",
+                "content": "Starting after the line break is a RECIPE by a food magazine.\n\n" + doc.text
+            })
+
+            secrets = self._secrets()
+
+            title_variation = next_variation(self.Variations.propose_recipe)
+            title = await self.chat.chat(
+                f'Optional context: The original title of the recipe is: "{doc.title}". '
+                f'Answer the question: What is being cooked in this recipe? '
+                f'Your answer must complete the sentence: "{title_variation[0]}". '
+                "The sentence includes a template marker []. You must substitute the template marker by your answer. "
+                "Respond with the completed sentence only.",
+                max_tokens=20) + title_variation[1]
+            for message in self._q_and_q_messages(title, repr(recipe)):
+                yield message
+            for message in self._q_and_q_messages(next_variation(self.Variations.give_nutrition),
+                                                  recipe.format_nutrition()):
+                yield message
+
+            if recipe.cuisine:
+                for message in self._q_and_q_messages(
+                        next_variation(self.Variations.which_cuisine),
+                        # TODO: prompt: Write a sentence that briefly answers the question considering the answer is {}.
+                        next_variation(self.Variations.cuisine_answer) + (", ".join(recipe.cuisine[:-1]) + " and " +
+                                                                          recipe.cuisine[-1] if len(recipe.cuisine) > 1
+                        else recipe.cuisine[0])
+                ):
+                    yield message
+
+            if recipe.category:
+                for message in self._q_and_q_messages(
+                        next_variation(self.Variations.which_category),
+                        # TODO: prompt: Write a sentence that briefly answers the question considering the answer is {}.
+                        next_variation(self.Variations.category_answer) + (", ".join(recipe.category[:-1]) + " and " +
+                                                                           recipe.category[-1] if len(
+                            recipe.category) > 1
+                        else recipe.category[0])):
+                    yield message
+
+            if recipe.prep_time or recipe.total_time:
+                if recipe.prep_time and recipe.total_time:
+                    time_answer = next_variation(self.Variations.prep_and_total_time).format(
+                        humanize.naturaldelta(recipe.prep_time),
+                        humanize.naturaldelta(recipe.total_time))
+                elif recipe.prep_time:
+                    time_answer = next_variation(self.Variations.prep_time).format(
+                        humanize.naturaldelta(recipe.prep_time))
+                else:
+                    time_answer = next_variation(self.Variations.total_time).format(
+                        humanize.naturaldelta(recipe.total_time))
+
+                for message in self._q_and_q_messages(next_variation(self.Variations.how_long_question),
+                                                      time_answer):
+                    yield message
+
+            async for message in secrets:
+                yield message
 
 
 if __name__ == '__main__':

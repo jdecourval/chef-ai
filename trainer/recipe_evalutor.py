@@ -1,6 +1,6 @@
 import logging
 from collections import deque
-from typing import override, Generator
+from typing import override, AsyncGenerator
 
 from model.model import Recipe
 from trainer.trainer import next_variation, main, RecipeTrainerBase
@@ -102,7 +102,7 @@ class RecipeEvaluatorTrainer(RecipeTrainerBase):
         ])
 
     @override
-    def _process_document(self, recipe: Recipe) -> Generator[dict[str, str], None, None]:
+    async def _process_document(self, recipe: Recipe) -> AsyncGenerator[dict[str, str], None]:
         if recipe.review_count < self.MIN_REVIEWS:
             return
 
@@ -112,41 +112,48 @@ class RecipeEvaluatorTrainer(RecipeTrainerBase):
         }
 
         yield intro
-        self._chatlog.append(intro)
+        self.chat.append(intro)
 
-        self._chatlog.append({
+        self.chat.append({
             "role": "user",
             "content": f"Starting after the line break are reviews for the recipe.\n\n{recipe.format_reviews()}"
         })
 
         with self.chat_scope():
-            why_good = self._chat(f"Describe why the recipe should get a score of {recipe.review_score}/5. "
-                                  "Act like you never saw the reviews. "
-                                  "This means you cannot refer to the reviews, reviewers or users in your response.")
+            why_good = await self.chat.chat(f"Describe why the recipe should get a score of {recipe.review_score}/5. "
+                                            "Act like you never saw the reviews. "
+                                            "This means you cannot refer to the reviews, reviewers or users in your response.")
 
         if recipe.review_score >= self.VERY_GOOD_SCORE_THRESHOLD:
-            yield from self._q_and_q_messages(
-                next_variation(self.Variations.looks_good),
-                next_variation(self.Variations.yes_good).format(recipe.review_score, why_good).strip())
+            for message in self._q_and_q_messages(
+                    next_variation(self.Variations.looks_good),
+                    next_variation(self.Variations.yes_good).format(recipe.review_score, why_good).strip()):
+                yield message
         else:
             critic = ""
-            if self._chat("Is there a concensus amongs the reviews that the recipe could be improved in some way?",
-                          grammar=self.GRAMMAR_YES_NO) == "yes":
-                critic = self._chat("Write a paragraph that suggest practical improvements to the recipe."
-                                    "Write your response using the recipe as the subject of your sentences. "
-                                    "Act like you never saw the reviews. "
-                                    "This means you cannot refer to the reviews, reviewers or users in your response.")
+            with self.chat_scope():
+                if await self.chat.chat(
+                        "Is there a concensus amongs the reviews that the recipe could be improved in some way?",
+                        grammar=self.GRAMMAR_YES_NO) == "yes":
+                    critic = await self.chat.chat("Write a paragraph that suggest practical improvements to the recipe."
+                                                  "Write your response using the recipe as the subject of your sentences. "
+                                                  "Act like you never saw the reviews. "
+                                                  "This means you cannot refer to the reviews, reviewers or users in your response.")
             if recipe.review_score < self.BAD_SCORE_THRESHOLD:
-                yield from self._q_and_q_messages(
-                    next_variation(self.Variations.looks_good),
-                    next_variation(self.Variations.no_good).format(recipe.review_score, why_good).strip())
+                for message in self._q_and_q_messages(
+                        next_variation(self.Variations.looks_good),
+                        next_variation(self.Variations.no_good).format(recipe.review_score, why_good).strip()):
+                    yield message
             else:
-                yield from self._q_and_q_messages(
-                    next_variation(self.Variations.looks_good),
-                    next_variation(self.Variations.maybe_good).format(recipe.review_score, why_good).strip())
+                for message in self._q_and_q_messages(
+                        next_variation(self.Variations.looks_good),
+                        next_variation(self.Variations.maybe_good).format(recipe.review_score, why_good).strip()):
+                    yield message
 
             if critic:
-                yield from self._q_and_q_messages(next_variation(self.Variations.how_to_improve), critic)
+                for message in self._q_and_q_messages(next_variation(self.Variations.how_to_improve),
+                                                      critic):
+                    yield message
 
 
 if __name__ == '__main__':
