@@ -125,6 +125,6 @@ class Training(DataclassIterableMixin):
     role: Role
     embedding: np.ndarray  # Serialized numpy array.
     trainer: str  # The class that generated this content.
-    postprocessed: str = None  # content fixed by post-processing
+    revision: str = ""  # So that multiple versions can be stored, e.g. postprocessed, model.
     source: Document = None  # The document that helped generated this content, if applicable. For bookkeeping.
     id: int = field(metadata="PRIMARY KEY", default=None)
