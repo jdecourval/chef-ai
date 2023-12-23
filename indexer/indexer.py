@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import sqlite3
 from pathlib import Path
 
 from tqdm import tqdm
@@ -32,9 +33,14 @@ class Indexer:
             else:
                 _logger.exception("Exception with", e)
         except Exception as e:
-            _logger.exception("Exception with", e)
+            _logger.exception(f"Exception in: {source}, with", e)
         else:
-            self.insert_db(document)
+            try:
+                self.insert_db(document)
+            except sqlite3.IntegrityError:
+                # There are actually some non-duplicated documents that have the same names. Too bad for them.
+                # .e.g. Gluten-Free Snickerdoodles Recipe, Confetti Cookies Recipe.
+                _logger.info(f"Document already indexed: {document}")
 
     def index_path(self, path):
         if path in self.indexed:

@@ -31,7 +31,7 @@ class Document(DataclassIterableMixin):
         assert self.text, "Empty document"
         return self
 
-    title: str
+    title: str = field(metadata="UNIQUE")
     text: str
     author: str
     source: str = None
