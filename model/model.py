@@ -23,10 +23,11 @@ class Document(DataclassIterableMixin):
         self = Document(
             title=unescape(metadata["headline"]),
             text=unescape("".join(selector.css("article .text-passage p.comp::text").getall()).strip()),
-            subtitle=unescape(selector.xpath('//meta[@name="description"]/@content').get()),
             author=unescape(metadata["author"][0]["name"]),
             source=source
         )
+        with contextlib.suppress(TypeError):
+            self.subtitle = unescape(selector.xpath('//meta[@name="description"]/@content').get())
         self.recipe = Recipe.build(self, metadata) if metadata["@type"][0] == "Recipe" else None
         assert self.text, "Empty document"
         return self
