@@ -19,7 +19,7 @@ from llama_cpp import Llama
 
 class LLMEngine:
     @abc.abstractmethod
-    def __init__(self, model, chat_format, n_ctx, verbose=False):
+    def __init__(self, model, n_ctx, verbose=False):
         pass
 
     async def __aenter__(self):
@@ -41,7 +41,7 @@ class LLMEngine:
 
 
 class LlamaCppServer(LLMEngine):
-    def __init__(self, model, chat_format="chatml", n_ctx=16 * 1024):
+    def __init__(self, model, n_ctx=16 * 1024):
         parallel = 4
         llama_server = sh.Command('/home/jerome/Prog/online/llama.cpp/build/bin/server')  # TODO: Unhardcode (softcode?)
         self.llama_server = llama_server('--model', model, '--n-gpu-layers', 99, '--ctx_size', n_ctx * parallel,
@@ -75,8 +75,8 @@ class LlamaCppServer(LLMEngine):
 
 
 class LlamaCppPython(LLMEngine):
-    def __init__(self, model, chat_format="chatml", n_ctx=16 * 1024):
-        self.llm = Llama(model_path=model, n_gpu_layers=99, n_ctx=n_ctx, chat_format=chat_format, verbose=False)
+    def __init__(self, model, n_ctx=16 * 1024):
+        self.llm = Llama(model_path=model, n_gpu_layers=99, n_ctx=n_ctx, chat_format="chatml", verbose=False)
         self.semaphore = anyio.Semaphore(1)  # Not thread safe.
 
     async def complete(self, text, **kwargs):
