@@ -17,10 +17,14 @@ from llama_cpp import Llama
 # TODO: CFG
 # TODO: Compression: https://github.com/microsoft/LLMLingua
 
+
+_logger = logging.getLogger(__name__)
+
+
 class LLMEngine:
     @abc.abstractmethod
-    def __init__(self, model, n_ctx, verbose=False):
-        pass
+    def __init__(self):
+        self.name = ""
 
     async def __aenter__(self):
         return self
@@ -39,9 +43,13 @@ class LLMEngine:
     async def chat(self, chatlog: list[dict[str, str]], **kwargs):
         pass
 
+    def model_name(self):
+        return self.name
+
 
 class LlamaCppServer(LLMEngine):
     def __init__(self, model, n_ctx=16 * 1024):
+        super().__init__()
         parallel = 4
         llama_server = sh.Command('/home/jerome/Prog/online/llama.cpp/build/bin/server')  # TODO: Unhardcode (softcode?)
         self.llama_server = llama_server('--model', model, '--n-gpu-layers', 99, '--ctx_size', n_ctx * parallel,
@@ -50,6 +58,10 @@ class LlamaCppServer(LLMEngine):
                                                   timeout=ClientTimeout(sock_read=600))
         # Increasing this leds to slowdown on pure token-generation work loads.
         self.semaphore = anyio.Semaphore(parallel)
+        try:
+            self.name = "".join(model.split("/")[-1].split(".")[:-2])
+        except Exception as e:
+            _logger.warning(f"Failed to parse model's name: {e}")
 
     async def aclose(self):
         self.llama_server.terminate()
@@ -76,8 +88,13 @@ class LlamaCppServer(LLMEngine):
 
 class LlamaCppPython(LLMEngine):
     def __init__(self, model, n_ctx=16 * 1024):
+        super().__init__()
         self.llm = Llama(model_path=model, n_gpu_layers=99, n_ctx=n_ctx, chat_format="chatml", verbose=False)
         self.semaphore = anyio.Semaphore(1)  # Not thread safe.
+        try:
+            self.name = "".join(model.split("/")[-1].split(".")[:-2])
+        except Exception as e:
+            _logger.warning(f"Failed to parse model's name: {e}")
 
     async def complete(self, text, **kwargs):
         pass
@@ -91,10 +108,11 @@ class LlamaCppPython(LLMEngine):
 
 class ExLlama(LLMEngine):
     def __init__(self, model, n_ctx=16 * 1024):
+        super().__init__()
         self.semaphore = anyio.Semaphore(1)  # Not thread safe.
         config = ExLlamaV2Config()
         config.model_dir = model
-        config.max_seq_len = n_ctx
+        config.max_seq_len = n_ctx  # TODO: 16k is probably too high for Mistral without rope or sliding attention.
         config.prepare()
         exllama = ExLlamaV2(config)
         cache = ExLlamaV2Cache_8bit(exllama, lazy=True)
@@ -103,6 +121,10 @@ class ExLlama(LLMEngine):
         self.generator = ExLlamaV2StreamingGenerator(exllama, cache, tokenizer)
         self.generator.set_stop_conditions([tokenizer.eos_token_id, "<|im_end|>"])
         self.generator.warmup()
+        try:
+            self.name = model.split("/")[-1].split("_")[-1]
+        except Exception as e:
+            _logger.warning(f"Failed to parse model's name: {e}")
 
     async def complete(self, text, max_tokens=400, temperature=0.85, **kwargs):
         gen = partial(self.generator.generate_simple, encode_special_tokens=True, decode_special_tokens=True)

@@ -75,10 +75,11 @@ item ::= "- " [^\r\n\x0b\x0c\x85\u2028\u2029]+ "\n"''', verbose=False)
             self._chatlog.append(message)
             return message['content']
 
-    def __init__(self, llm: LLMEngine, sql: SQLitePipeline, limit=False):
+    def __init__(self, llm: LLMEngine, sql: SQLitePipeline, revision: str = None, limit=False):
         self._llm = llm
         self._sql = sql
         self._limit = "ORDER BY RANDOM() LIMIT 50" if limit else ""
+        self.revision = llm.model_name() if revision is None else revision
         self.embed_model = SentenceTransformer('thenlper/gte-large')
         self.chat = self.ChatScope(self._llm)
         self.chat.append({"role": "system", "content": Trainer.SYSTEM_PROMPT})
@@ -135,7 +136,8 @@ item ::= "- " [^\r\n\x0b\x0c\x85\u2028\u2029]+ "\n"''', verbose=False)
                         role=Training.Role[conversation["role"]],
                         embedding=embedding,
                         trainer=self.__class__.__name__,
-                        source=source
+                        source=source,
+                        revision=self.revision
                         )
 
     async def start(self):
@@ -170,7 +172,7 @@ class RecipeTrainerBase(Trainer):
         pass
 
 
-def main(trainer: Type[Trainer], limit=False):
+def main(trainer: Type[Trainer], revision=None, limit=False):
     import logging
     import argparse
     from db.db import SQLitePipeline
@@ -184,7 +186,7 @@ def main(trainer: Type[Trainer], limit=False):
         llm = LlamaCppPython(model=args.model)
         # llm.set_cache(LlamaRAMCache(100 * 1024 ** 2))  # This seems to massively increase RAM usage and slow down overall.
         sql = SQLitePipeline()
-        await trainer(llm, sql, limit=limit).start()
+        await trainer(llm, sql, revision=revision, limit=limit).start()
 
     training_count = anyio.run(start)
     _logger.info(f"Trainer done. It generated {training_count} documents.")

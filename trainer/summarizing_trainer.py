@@ -117,4 +117,4 @@ class SummarizingTrainer(Trainer):
 
 
 if __name__ == '__main__':
-    main(SummarizingTrainer, False)
+    main(SummarizingTrainer, None, False)
