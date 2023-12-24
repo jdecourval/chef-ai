@@ -41,9 +41,9 @@ class SummarizingTrainer(Trainer):
 
     @override
     async def __aiter__(self) -> AsyncGenerator[Training, None]:
-        last_index = next(self._sql.select_one_col(
-            f"SELECT coalesce(MAX(conversation), 0) FROM Training WHERE trainer='{self.__class__.__name__}'"))
-        for idx, document in enumerate(self._documents_without_recipe(), start=last_index + 1):
+        conversation_id = next(self._sql.select_one_col(
+            f"SELECT coalesce(MAX(conversation), 0) FROM Training WHERE trainer='{self.__class__.__name__}'")) + 1
+        for document in self._documents_without_recipe():
             if next(self._sql.select_one_col(
                     "SELECT count(1) FROM Training WHERE source=? AND trainer='SummarizingTrainer'", (document,))):
                 _logger.info(f"Skipping over already processed document: {document}")
@@ -52,8 +52,9 @@ class SummarizingTrainer(Trainer):
             try:
                 with self.chat_scope():
                     async for position, conversation in aenumerate(self._process_document(document)):
+                        conversation_id += 1  # TODO: Maybe _process_document should yield full conversations after all.
                         yield self._training(conversation=conversation,
-                                             conversation_id=idx,
+                                             conversation_id=conversation_id // 2,
                                              position=position % 2,  # Assumes _process_document generates many q&a.
                                              source=document
                                              )
@@ -96,6 +97,7 @@ class SummarizingTrainer(Trainer):
                 del questions[entropy[-1][0]]
 
         results = []
+
         async def gen_q_and_a(question):
             with self.chat_scope():
                 summary = await self.chat.chat(
