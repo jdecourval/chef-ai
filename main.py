@@ -2,18 +2,19 @@ import argparse
 import logging
 
 from anyio import run
-from llama_cpp import Llama, LlamaRAMCache
 
+from ai.engine import ExLlama, LlamaCppServer
 from db.db import SQLitePipeline
-from formatter.formatter import ChatMLFormatter
+from finetuning.finetuning import Finetuning
 from indexer.indexer import Indexer
 from spider.spider import start as spider_start
-from spider.spider import enrich as spider_enrich
-from trainer.trainer import RecipeEvaluatorTrainer, RecipeTrainer, SummarizingTrainer
+from trainer.recipe_evaluator import RecipeEvaluatorTrainer
+from trainer.recipe_trainer import RecipeTrainer
+from trainer.summarizing_trainer import SummarizingTrainer
 
 _logger = logging.getLogger(__name__)
 
-quick = True
+quick = False
 
 
 async def main():
@@ -25,28 +26,35 @@ async def main():
     _logger.info("Starting spider")
     await spider_start()
 
-    _logger.info("Starting enrichment")
-    await spider_enrich()  # Should not be necessary.
+    # _logger.info("Starting enrichment")
+    # await spider_enrich()  # Should not be necessary.
 
     _logger.info("Setting up DB")
     sql = SQLitePipeline()
 
-    _logger.info("Starting indexer")
+    _logger.info("Indexing")
     Indexer(sql).start()
 
     _logger.info("Loading LLM")
-    llm = Llama(model_path=args.model, n_gpu_layers=99, n_ctx=16 * 1024, chat_format="chatml", verbose=False,
-                embedding=True)
-    llm.set_cache(LlamaRAMCache(100 * 1024 ** 2))
+    if args.model.endswith(".gguf"):
+        llm = LlamaCppServer(model=args.model)
+    else:
+        llm = ExLlama(model=args.model)
 
-    for trainer in RecipeEvaluatorTrainer, RecipeTrainer, SummarizingTrainer:
-        _logger.info(f"Starting trainer: {trainer.__name__}")
-        trainer(llm, sql, limit=quick).start()
+    async with llm:
+        for trainer in RecipeEvaluatorTrainer, RecipeTrainer, SummarizingTrainer:
+            _logger.info(f"Starting trainer: {trainer.__name__}")
+            await trainer(llm, sql, limit=quick).start()
 
-    _logger.info("Generating training dataset")
-    formatter = ChatMLFormatter(sql)
-    formatter.start()
+    _logger.info("Finetuning")
+    finetuning = Finetuning(sql)
+    finetuning.train()
 
+    _logger.info("Dequantizing")
+
+    _logger.info("Merging LoRA")
+    _logger.info("Converting weights to Llama.cpp")
+    _logger.info("Quantizing")
 
 if __name__ == '__main__':
     run(main)
