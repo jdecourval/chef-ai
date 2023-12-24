@@ -2,6 +2,7 @@ import dataclasses
 import datetime
 import json
 import sqlite3
+from pathlib import PosixPath
 from typing import Any, Generator, Type
 
 from db.db_utils import field_description, DataclassIterableMixin
@@ -15,6 +16,7 @@ class SQLitePipeline:
         sqlite3.register_adapter(list, json.dumps)
         sqlite3.register_adapter(datetime.timedelta, lambda x: x.seconds)
         sqlite3.register_adapter(Document, lambda x: x.primary_key)
+        sqlite3.register_adapter(PosixPath, str)
 
         # Register the adapter and converter
         sqlite3.register_converter("dict", json.loads)
@@ -39,7 +41,7 @@ class SQLitePipeline:
             self._create_table_from_dataclass(Training)
             # This will help pulling training solutions from the DB in the corect order.
             self.connection.execute(
-                "CREATE INDEX IF NOT EXISTS training_index ON training (trainer, conversation, position)")
+                "CREATE INDEX IF NOT EXISTS training_index ON Training (trainer, conversation, position)")
 
     def _create_table_from_dataclass(self, dc: Type[dataclasses.dataclass]):
         fields = ','.join([field_description(field) for field in dataclasses.fields(dc)])
