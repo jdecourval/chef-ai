@@ -216,10 +216,12 @@ class RecipeTrainer(RecipeTrainerBase):
             for message in self._q_and_q_messages(
                     next_variation(self.Variations.which_category),
                     # TODO: prompt: Write a sentence that briefly answers the question considering the answer is {}.
-                    next_variation(self.Variations.category_answer) + (", ".join(recipe.category[:-1]) + " and " +
-                                                                       recipe.category[-1] if len(
-                        recipe.category) > 1
-                    else recipe.category[0])):
+                    next_variation(self.Variations.category_answer) + (
+                            ", ".join(recipe.category[:-1]) + " and " + recipe.category[-1]
+                            if len(recipe.category) > 1
+                            else recipe.category[0]
+                    ) + "."
+            ):
                 yield message
 
         if recipe.prep_time or recipe.total_time:
