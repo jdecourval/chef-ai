@@ -181,66 +181,65 @@ class RecipeTrainer(RecipeTrainerBase):
             return
 
         doc = recipe.document
-        with self.chat_scope():
-            self.chat.append({
-                "role": "user",
-                "content": "Starting after the line break is a RECIPE by a food magazine.\n\n" + doc.text
-            })
+        self.chat.append({
+            "role": "user",
+            "content": "Starting after the line break is a RECIPE by a food magazine.\n\n" + doc.text
+        })
 
-            secrets = self._secrets()
+        secrets = self._secrets()
 
-            title_variation = next_variation(self.Variations.propose_recipe)
-            title = await self.chat.chat(
-                f'Optional context: The original title of the recipe is: "{doc.title}". '
-                f'Answer the question: What is being cooked in this recipe? '
-                f'Your answer must complete the sentence: "{title_variation[0]}". '
-                "The sentence includes a template marker []. You must substitute the template marker by your answer. "
-                "Respond with the completed sentence only.",
-                max_tokens=20) + title_variation[1]
-            for message in self._q_and_q_messages(title, repr(recipe)):
+        title_variation = next_variation(self.Variations.propose_recipe)
+        title = await self.chat.chat(
+            f'Optional context: The original title of the recipe is: "{doc.title}". '
+            f'Answer the question: What is being cooked in this recipe? '
+            f'Your answer must complete the sentence: "{title_variation[0]}". '
+            "The sentence includes a template marker []. You must substitute the template marker by your answer. "
+            "Respond with the completed sentence only.",
+            max_tokens=20) + title_variation[1]
+        for message in self._q_and_q_messages(title, repr(recipe)):
+            yield message
+        for message in self._q_and_q_messages(next_variation(self.Variations.give_nutrition),
+                                              recipe.format_nutrition()):
+            yield message
+
+        if recipe.cuisine:
+            for message in self._q_and_q_messages(
+                    next_variation(self.Variations.which_cuisine),
+                    # TODO: prompt: Write a sentence that briefly answers the question considering the answer is {}.
+                    next_variation(self.Variations.cuisine_answer) + (", ".join(recipe.cuisine[:-1]) + " and " +
+                                                                      recipe.cuisine[-1] if len(recipe.cuisine) > 1
+                    else recipe.cuisine[0])
+            ):
                 yield message
-            for message in self._q_and_q_messages(next_variation(self.Variations.give_nutrition),
-                                                  recipe.format_nutrition()):
+
+        if recipe.category:
+            for message in self._q_and_q_messages(
+                    next_variation(self.Variations.which_category),
+                    # TODO: prompt: Write a sentence that briefly answers the question considering the answer is {}.
+                    next_variation(self.Variations.category_answer) + (", ".join(recipe.category[:-1]) + " and " +
+                                                                       recipe.category[-1] if len(
+                        recipe.category) > 1
+                    else recipe.category[0])):
                 yield message
 
-            if recipe.cuisine:
-                for message in self._q_and_q_messages(
-                        next_variation(self.Variations.which_cuisine),
-                        # TODO: prompt: Write a sentence that briefly answers the question considering the answer is {}.
-                        next_variation(self.Variations.cuisine_answer) + (", ".join(recipe.cuisine[:-1]) + " and " +
-                                                                          recipe.cuisine[-1] if len(recipe.cuisine) > 1
-                        else recipe.cuisine[0])
-                ):
-                    yield message
+        if recipe.prep_time or recipe.total_time:
+            if recipe.prep_time and recipe.total_time:
+                time_answer = next_variation(self.Variations.prep_and_total_time).format(
+                    humanize.naturaldelta(recipe.prep_time),
+                    humanize.naturaldelta(recipe.total_time))
+            elif recipe.prep_time:
+                time_answer = next_variation(self.Variations.prep_time).format(
+                    humanize.naturaldelta(recipe.prep_time))
+            else:
+                time_answer = next_variation(self.Variations.total_time).format(
+                    humanize.naturaldelta(recipe.total_time))
 
-            if recipe.category:
-                for message in self._q_and_q_messages(
-                        next_variation(self.Variations.which_category),
-                        # TODO: prompt: Write a sentence that briefly answers the question considering the answer is {}.
-                        next_variation(self.Variations.category_answer) + (", ".join(recipe.category[:-1]) + " and " +
-                                                                           recipe.category[-1] if len(
-                            recipe.category) > 1
-                        else recipe.category[0])):
-                    yield message
-
-            if recipe.prep_time or recipe.total_time:
-                if recipe.prep_time and recipe.total_time:
-                    time_answer = next_variation(self.Variations.prep_and_total_time).format(
-                        humanize.naturaldelta(recipe.prep_time),
-                        humanize.naturaldelta(recipe.total_time))
-                elif recipe.prep_time:
-                    time_answer = next_variation(self.Variations.prep_time).format(
-                        humanize.naturaldelta(recipe.prep_time))
-                else:
-                    time_answer = next_variation(self.Variations.total_time).format(
-                        humanize.naturaldelta(recipe.total_time))
-
-                for message in self._q_and_q_messages(next_variation(self.Variations.how_long_question),
-                                                      time_answer):
-                    yield message
-
-            async for message in secrets:
+            for message in self._q_and_q_messages(next_variation(self.Variations.how_long_question),
+                                                  time_answer):
                 yield message
+
+        async for message in secrets:
+            yield message
 
 
 if __name__ == '__main__':

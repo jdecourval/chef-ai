@@ -143,6 +143,7 @@ item ::= "- " [^\r\n\x0b\x0c\x85\u2028\u2029]+ "\n"''', verbose=False)
     async def start(self):
         count = 0
         async for count, training in aenumerate(self):
+            # TODO: Transaction per document
             self._sql.insert(training)
         return count
 
@@ -158,12 +159,13 @@ class RecipeTrainerBase(Trainer):
                 _logger.info(f"Skipping over already processed recipe: {recipe.document}")
                 continue
             try:
-                async for position, conversation in aenumerate(self._process_document(recipe)):
-                    yield self._training(conversation=conversation,
-                                         conversation_id=idx,
-                                         position=position,
-                                         source=recipe.document
-                                         )
+                with self.chat_scope():
+                    async for position, conversation in aenumerate(self._process_document(recipe)):
+                        yield self._training(conversation=conversation,
+                                             conversation_id=idx,
+                                             position=position,
+                                             source=recipe.document
+                                             )
             except:
                 _logger.exception(f"Failed to process recipe: {recipe.document}")
 
