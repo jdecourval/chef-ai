@@ -72,20 +72,20 @@ class RecipeEvaluatorTrainer(RecipeTrainerBase):
         ])
 
         no_good = deque([
-            "I'm not convinced. I'd give it a 2.8 out of 5.",
-            "Hmm, not really my favorite. I'd rate it 2.8/5.",
-            "I'm not feeling it. I'd go with a 2.8 out of 5.",
-            "Not my top choice. I'm leaning towards 2.8 out of 5.",
-            "I'm not sold on it. A 2.8 out of 5 seems fair.",
-            "Not exactly a winner. I'd give it a 2.8/5.",
-            "I'm not overly impressed. 2.8 out of 5, I'd say.",
-            "I remain unconvinced. My rating would be 2.8 out of 5.",
-            "Hmm, it's not quite to my liking. I'd assign it a 2.8/5.",
-            "I'm not vibing with it. A 2.8 out of 5 feels right.",
-            "It would not be my first choice. I'm inclining towards a 2.8 out of 5.",
-            "I'm not entirely convinced. A 2.8 out of 5 seems reasonable.",
-            "Not exactly a standout. I'd rate it 2.8/5.",
-            "I'm not overly wowed. I'd settle for a 2.8 out of 5."
+            "I'm not convinced. I'd give it a {} out of 5.\n\n{}",
+            "Hmm, not really my favorite. I'd rate it {}/5.\n\n{}",
+            "I'm not feeling it. I'd go with a {} out of 5.\n\n{}",
+            "Not my top choice. I'm leaning towards {} out of 5.\n\n{}",
+            "I'm not sold on it. A {} out of 5 seems fair.\n\n{}",
+            "Not exactly a winner. I'd give it a {}/5.\n\n{}",
+            "I'm not overly impressed. {} out of 5, I'd say.\n\n{}",
+            "I remain unconvinced. My rating would be {} out of 5.\n\n{}",
+            "Hmm, it's not quite to my liking. I'd assign it a {}/5.\n\n{}",
+            "I'm not vibing with it. A {} out of 5 feels right.\n\n{}",
+            "It would not be my first choice. I'm inclining towards a {} out of 5.\n\n{}",
+            "I'm not entirely convinced. A {} out of 5 seems reasonable.\n\n{}",
+            "Not exactly a standout. I'd rate it {}/5.\n\n{}",
+            "I'm not overly wowed. I'd settle for a {} out of 5.\n\n{}"
         ])
 
         how_to_improve = deque([
