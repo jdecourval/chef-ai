@@ -148,9 +148,9 @@ class RecipeTrainerBase(Trainer):
         last_index = next(self._sql.select_one_col(
             f"SELECT coalesce(MAX(conversation), 0) FROM Training WHERE trainer='{self.__class__.__name__}'"))
         for idx, recipe in enumerate(self._all_recipes(), start=last_index + 1):
-            if next(self._sql.select_one_col("SELECT count(1) FROM Training "
-                                             f"WHERE source=? AND trainer='{self.__class__.__name__}'",
-                                             (recipe.document,))):
+            if next(self._sql.select_one_col(
+                    "SELECT count(1) FROM Training WHERE source=? AND trainer=? AND revision=?",
+                    (recipe.document, self.__class__.__name__, self.revision))):
                 _logger.info(f"Skipping over already processed recipe: {recipe.document}")
                 continue
             try:

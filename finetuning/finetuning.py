@@ -16,6 +16,7 @@ SYSTEM_PROMPT = {"role": "system", "content":
 
 class Finetuning:
     modelpath = "teknium/OpenHermes-2.5-Mistral-7B"
+    revision = "openhermes-25-mistral-7b-16k"
 
     def __init__(self, sql: SQLitePipeline):
         self._sql = sql
@@ -28,8 +29,9 @@ class Finetuning:
                 SELECT json_group_array(json_object(
                     'role', CASE role WHEN 0 THEN 'system' WHEN 1 THEN 'user' ELSE 'assistant' END, 
                     'content', Training.content))
-                FROM (SELECT * FROM Training ORDER BY position) as Training GROUP BY conversation, trainer
-                """
+                FROM (SELECT * FROM Training WHERE revision=? ORDER BY position) as Training 
+                GROUP BY conversation, trainer
+                """, (self.revision,)
         ):
             yield [SYSTEM_PROMPT] + json.loads(chat)
 
@@ -125,7 +127,10 @@ class Finetuning:
                 # https://medium.com/@drishtisharma96505/analyzing-the-impact-of-lora-alpha-on-llama-2-quantized-with-gptq-f01e8e8ed8fd
                 r=64,
                 lora_alpha=16,
-                lora_dropout=0.1,
+                lora_dropout=0.05,
+                # From QLoRA paper:
+                #  We find that the most critical LoRA hyperparameter is how many LoRA adapters are used in total and
+                #  that LoRA on all linear transformer block layers is required to match full finetuning performance.
                 target_modules=['q_proj', 'k_proj', 'down_proj', 'v_proj', 'gate_proj', 'o_proj', 'up_proj'],
                 bias="none",
                 # TODO: Can probably be dropped now that we don't customize the vocabulary

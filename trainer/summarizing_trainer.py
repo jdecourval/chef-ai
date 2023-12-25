@@ -41,10 +41,11 @@ class SummarizingTrainer(Trainer):
     @override
     async def __aiter__(self) -> AsyncGenerator[Training, None]:
         conversation_id = next(self._sql.select_one_col(
-            f"SELECT coalesce(MAX(conversation), 0) FROM Training WHERE trainer='{self.__class__.__name__}'")) + 1
+            f"SELECT coalesce(MAX(conversation), 0) FROM Training WHERE trainer='SummarizingTrainer'")) + 1
         for document in self._documents_without_recipe():
             if next(self._sql.select_one_col(
-                    "SELECT count(1) FROM Training WHERE source=? AND trainer='SummarizingTrainer'", (document,))):
+                    "SELECT count(1) FROM Training WHERE source=? AND trainer='SummarizingTrainer' AND revision=?",
+                    (document, self.revision))):
                 _logger.info(f"Skipping over already processed document: {document}")
                 continue
 
