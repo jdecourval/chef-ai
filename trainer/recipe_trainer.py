@@ -139,11 +139,9 @@ class RecipeTrainer(RecipeTrainerBase):
             "In making this recipe, what can I do to make sure it turns out well?",
             "What measures should I take to make sure this recipe is a success?",
             "What can I do to make sure this recipe turns out perfectly?",
-            "How can I guarantee the success of this recipe from the book I'm following?",
             "What steps should I follow to make sure this recipe is a hit?",
             "How can I ensure the success of this recipe I'm trying out?",
             "What can I do to make sure this recipe turns out delicious?",
-            "How do I make sure this recipe I found in the book is successful?"
         ])
 
     async def _secrets(self):
