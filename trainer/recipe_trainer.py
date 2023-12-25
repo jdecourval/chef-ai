@@ -154,14 +154,14 @@ class RecipeTrainer(RecipeTrainerBase):
             answer = await self.chat.chat(
                 "Is there a secret, a key technique, or a special ingredient to this recipe that contributes to its success?")
             if await self.chat.chat("Is that common knowledge, or obvious to most people?",
-                                    grammar=self.GRAMMAR_YES_NO) == "no":
+                                    grammar=self.grammar_yes_no) == "no":
                 secrets.append(answer)
 
                 for _ in range(3):
                     answer = await self.chat.chat("Anything else?")
                     if answer.lower().startswith("no") or await self.chat.chat(
                             "Is that common knowledge, or obvious to most people?",
-                            grammar=self.GRAMMAR_YES_NO) == "yes":
+                            grammar=self.grammar_yes_no) == "yes":
                         break
                     secrets.append(answer)
                 else:

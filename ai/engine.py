@@ -2,16 +2,19 @@ import abc
 import logging
 import time
 from functools import partial
+from typing import override, TypeVar
 
 import aiohttp
 import anyio
 import sh
 from aiohttp import ClientTimeout
 from anyio import run, to_thread
+from anyio.streams.memory import MemoryObjectSendStream, MemoryObjectReceiveStream
 from exllamav2 import ExLlamaV2Config, ExLlamaV2, ExLlamaV2Tokenizer, ExLlamaV2Cache_8bit
 from exllamav2.generator import ExLlamaV2Sampler, ExLlamaV2StreamingGenerator
-from llama_cpp import Llama
-
+from llama_cpp import Llama, LlamaGrammar
+from lmformatenforcer import RegexParser
+from lmformatenforcer.integrations.exllamav2 import ExLlamaV2TokenEnforcerFilter
 
 # TODO: Samplers
 # TODO: CFG
@@ -22,6 +25,8 @@ _logger = logging.getLogger(__name__)
 
 
 class LLMEngine:
+    Grammar = TypeVar('Grammar')
+
     @abc.abstractmethod
     def __init__(self):
         self.name = ""
@@ -45,6 +50,10 @@ class LLMEngine:
 
     def model_name(self):
         return self.name
+
+    @abc.abstractmethod
+    def get_options_grammar(self, options: list[str]) -> Grammar:
+        pass
 
 
 class LlamaCppServer(LLMEngine):
@@ -79,11 +88,15 @@ class LlamaCppServer(LLMEngine):
     async def complete(self, text, **kwargs):
         pass
 
-    async def chat(self, chatlog: list[dict[str, str]], max_tokens=400, grammar=None, **kwargs):
+    async def chat(self, chatlog: list[dict[str, str]], max_tokens=400, **kwargs):
         async with self.semaphore:
             async with self.llama_client.post("/v1/chat/completions",
                                               json={'messages': chatlog, 'n_predict': max_tokens, **kwargs}) as resp:
                 return (await resp.json())['choices'][0]['message']
+
+    @override
+    def get_options_grammar(self, options: list[str]) -> LLMEngine.Grammar:
+        return f"root ::= {' | '.join(f'"{option}"' for option in options)}"
 
 
 class LlamaCppPython(LLMEngine):
@@ -105,6 +118,10 @@ class LlamaCppPython(LLMEngine):
             output = await to_thread.run_sync(gen, chatlog)
         return output['choices'][0]['message']
 
+    @override
+    def get_options_grammar(self, options: list[str]) -> LLMEngine.Grammar:
+        return LlamaGrammar.from_string(f"root ::= {' | '.join(f'"{option}"' for option in options)}", verbose=False)
+
 
 class ExLlama(LLMEngine):
     def __init__(self, model, n_ctx=16 * 1024):
@@ -117,16 +134,16 @@ class ExLlama(LLMEngine):
         exllama = ExLlamaV2(config)
         cache = ExLlamaV2Cache_8bit(exllama, lazy=True)
         exllama.load_autosplit(cache)
-        tokenizer = ExLlamaV2Tokenizer(config)
-        self.generator = ExLlamaV2StreamingGenerator(exllama, cache, tokenizer)
-        self.generator.set_stop_conditions([tokenizer.eos_token_id, "<|im_end|>"])
+        self.tokenizer = ExLlamaV2Tokenizer(config)
+        self.generator = ExLlamaV2StreamingGenerator(exllama, cache, self.tokenizer)
+        self.generator.set_stop_conditions([self.tokenizer.eos_token_id, "<|im_end|>"])
         self.generator.warmup()
         try:
             self.name = model.split("/")[-1].split("_")[-1]
         except Exception as e:
             _logger.warning(f"Failed to parse model's name: {e}")
 
-    async def complete(self, text, max_tokens=400, temperature=0.85, **kwargs):
+    async def complete(self, text, max_tokens=400, temperature=0.85, grammar: LLMEngine.Grammar = None, **kwargs):
         gen = partial(self.generator.generate_simple, encode_special_tokens=True, decode_special_tokens=True)
         settings = ExLlamaV2Sampler.Settings()
         settings.temperature = temperature
@@ -137,8 +154,12 @@ class ExLlama(LLMEngine):
     async def chat(self, chatlog: list[dict[str, str]], **kwargs):
         prompt = "".join(f"<|im_start|>{i["role"]}\n{i['content']}<|im_end|>\n" for i in chatlog)
         prompt += "<|im_start|>assistant\n"
-        output = await self.complete(prompt)
-        return {"role": "assistant", "content": output.removeprefix(prompt)}
+        output = await self.complete(prompt, **kwargs)
+        return {"role": "assistant", "content": output[len(prompt):]}
+
+    @override
+    def get_options_grammar(self, options: list[str]) -> LLMEngine.Grammar:
+        return ExLlamaV2TokenEnforcerFilter(RegexParser('|'.join(f'({option})' for option in options)), self.tokenizer)
 
 
 if __name__ == '__main__':

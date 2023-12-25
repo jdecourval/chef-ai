@@ -5,7 +5,6 @@ from typing import override, Generator, AsyncGenerator
 
 import numpy as np
 from anyio import create_task_group
-from llama_cpp import LlamaGrammar
 from sentence_transformers.util import cos_sim
 from tqdm import tqdm
 
@@ -17,13 +16,13 @@ _logger = logging.getLogger(__name__)
 
 
 class SummarizingTrainer(Trainer):
-    GRAMMAR_KNOWLEDGE = LlamaGrammar.from_string('root ::= "anecdotes" | "story" | "knowledge"', verbose=False)
     # MIN_DOC_SIZE_B = 500  # Largest is 53453, avg is 5667.
     MIN_DOC_SIZE_B = 8000  # This gives 1379 documents which is way more manageable for now.
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.log = open("summarizing_trainer.log", "w")
+        self.grammar_knowledge = self._llm.get_options_grammar(["anecdotes", "story", "knowledge"])
 
     def _documents_without_recipe(self) -> Generator[Document, None, None]:
         # octet_length is faster for an approximate length.
@@ -71,7 +70,7 @@ class SummarizingTrainer(Trainer):
             if await self.chat.chat(
                     "Does the ARTICLE talks of anecdotes, does it tell a story, or is it about culinary knowledge? "
                     "Your answer must be one word: 'anecdotes', 'story' or 'knowledge'.",
-                    grammar=self.GRAMMAR_KNOWLEDGE
+                    grammar=self.grammar_knowledge
             ) in ["anecdotes", "story"]:
                 return
 

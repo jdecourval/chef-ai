@@ -5,7 +5,6 @@ from contextlib import contextmanager
 from typing import Generator, Type, AsyncGenerator
 
 import anyio
-from llama_cpp import LlamaGrammar
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
@@ -45,11 +44,6 @@ class Trainer:
     SYSTEM_PROMPT = ("You are a helpful assistant. Below is an instruction that describes a task. "
                      "Write a response that appropriately completes the request.")
     CHAT_DEFAULTS = {"max_tokens": 400, "temperature": 0}
-    GRAMMAR_YES_NO = LlamaGrammar.from_string('root ::= "yes" | "no"', verbose=False)
-    GRAMMAR_LIST = LlamaGrammar.from_string(r'''root ::= item+
-item ::= "- " [^\r\n\x0b\x0c\x85\u2028\u2029]+ "\n"''', verbose=False)
-    # GRAMMAR_LIST_NUMBERED = LlamaGrammar.from_string(r'''root ::= item+
-    # item ::= "\d+\. " [^\r\n\x0b\x0c\x85\u2028\u2029]+ "\n"''', verbose=False)
 
     class ChatScope:
         def __init__(self, llm: LLMEngine, parent=None):
@@ -83,6 +77,7 @@ item ::= "- " [^\r\n\x0b\x0c\x85\u2028\u2029]+ "\n"''', verbose=False)
         self.embed_model = SentenceTransformer('thenlper/gte-large')
         self.chat = self.ChatScope(self._llm)
         self.chat.append({"role": "system", "content": Trainer.SYSTEM_PROMPT})
+        self.grammar_yes_no = self._llm.get_options_grammar(["yes", "no"])
         # self.embed_model = SentenceTransformer('sentence-transformers/all-mpnet-base-v2')
 
     @contextmanager
