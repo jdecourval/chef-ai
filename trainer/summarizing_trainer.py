@@ -4,7 +4,6 @@ import re
 from typing import override, AsyncGenerator
 
 import numpy as np
-from sentence_transformers import SentenceTransformer
 from sentence_transformers.util import cos_sim
 
 from db.db import SQLitePipeline
@@ -19,11 +18,11 @@ class SummarizingTrainer(Trainer):
     MIN_DOC_SIZE_B = 8000  # This gives 1379 documents which is way more manageable for now.
     _LIMIT_QUICK = "ORDER BY RANDOM() LIMIT 50"
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, embed_model, **kwargs):
         super().__init__(*args, **kwargs)
         self.log = open("summarizing_trainer.log", "w")
         self.grammar_knowledge = self._llm.get_options_grammar(("anecdotes", "story", "knowledge"))
-        self.embed_model = SentenceTransformer('thenlper/gte-large')
+        self.embed_model = embed_model
 
     @classmethod
     @override

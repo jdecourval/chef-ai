@@ -3,6 +3,7 @@ import logging
 
 import anyio
 from anyio import run, Semaphore
+from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
 from ai.engine import ExLlama, LlamaCppPython
@@ -44,6 +45,8 @@ async def main():
     else:
         llm = ExLlama(model=args.model)
 
+    # GPU memory may be maxed out already by the LLM.
+    embed_model = SentenceTransformer('thenlper/gte-large', device='cpu')
     semaphore = Semaphore(document_parallelism)
     revision = llm.model_name()
 
@@ -56,7 +59,7 @@ async def main():
                     async for count, document in aenumerate(trainer_type.document_generator(sql, quick=quick)):
                         # TODO: Transaction per document
                         await semaphore.acquire()
-                        trainer = trainer_type(document, llm, revision=revision)
+                        trainer = trainer_type(document, llm, revision=revision, embed_model=embed_model)
 
                         async def process():
                             try:

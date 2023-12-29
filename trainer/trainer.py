@@ -69,7 +69,7 @@ class Trainer(ABC):
             self._chatlog.append(message)
             return message['content']
 
-    def __init__(self, input: Input, llm: LLMEngine, revision: str = ""):
+    def __init__(self, input: Input, llm: LLMEngine, revision: str = "", embed_model=None):
         self._llm = llm
         self.revision = revision
         self.chat = self._ChatScope(self._llm)
