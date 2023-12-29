@@ -4,7 +4,7 @@ import random
 import re
 import sys
 import time
-from functools import partial
+from functools import partial, cache
 from itertools import takewhile
 from typing import override, TypeVar
 
@@ -56,7 +56,7 @@ class LLMEngine:
         return self.name
 
     @abc.abstractmethod
-    def get_options_grammar(self, options: list[str]) -> Grammar:
+    def get_options_grammar(self, options: tuple[str, ...]) -> Grammar:
         pass
 
 
@@ -98,7 +98,8 @@ class LlamaCppServer(LLMEngine):
                 return (await resp.json())['choices'][0]['message']
 
     @override
-    def get_options_grammar(self, options: list[str]) -> LLMEngine.Grammar:
+    @cache
+    def get_options_grammar(self, options: tuple[str, ...]) -> LLMEngine.Grammar:
         return f"root ::= {' | '.join(f'"{option}"' for option in options)}"
 
 
@@ -122,7 +123,8 @@ class LlamaCppPython(LLMEngine):
         return output['choices'][0]['message']
 
     @override
-    def get_options_grammar(self, options: list[str]) -> LLMEngine.Grammar:
+    @cache
+    def get_options_grammar(self, options: tuple[str, ...]) -> LLMEngine.Grammar:
         return LlamaGrammar.from_string(f"root ::= {' | '.join(f'"{option}"' for option in options)}", verbose=False)
 
 
@@ -272,7 +274,8 @@ class ExLlama(LLMEngine):
         return worst_pad_ratio < self.MAX_PAD_PERCENT
 
     @override
-    def get_options_grammar(self, options: list[str]) -> LLMEngine.Grammar:
+    @cache
+    def get_options_grammar(self, options: tuple[str, ...]) -> LLMEngine.Grammar:
         return ExLlamaV2TokenEnforcerFilter(RegexParser('|'.join(f'({option})' for option in options)), self.tokenizer)
 
 
