@@ -2,6 +2,7 @@ import dataclasses
 import datetime
 import json
 import sqlite3
+import uuid
 from pathlib import PosixPath
 from typing import Any, Generator, Type
 
@@ -17,12 +18,14 @@ class SQLitePipeline:
         sqlite3.register_adapter(datetime.timedelta, lambda x: x.seconds)
         sqlite3.register_adapter(Document, lambda x: x.primary_key)
         sqlite3.register_adapter(PosixPath, str)
+        sqlite3.register_adapter(uuid.UUID, lambda x: x.bytes_le)
 
         # Register the adapter and converter
         sqlite3.register_converter("dict", json.loads)
         sqlite3.register_converter("list", json.loads)
         sqlite3.register_converter("timedelta", lambda x: datetime.timedelta(seconds=int(x)))
         sqlite3.register_converter("Role", lambda x: Training.Role(int(x)))  # TODO: Make generic
+        sqlite3.register_converter("UUID", lambda x: uuid.UUID(bytes_le=x))
 
         def dict_row_factory(cursor, row):
             fields = [column[0] for column in cursor.description]

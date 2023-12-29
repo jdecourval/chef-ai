@@ -1,12 +1,12 @@
 import contextlib
 import enum
 import json
+import uuid
 from dataclasses import field, dataclass
 from datetime import timedelta
 from html import unescape
 
 import isodate
-import numpy as np
 from parsel import Selector
 
 from db.db_utils import DataclassIterableMixin
@@ -120,11 +120,10 @@ class Training(DataclassIterableMixin):
         user = 1
         assistant = 2
 
-    conversation: int  # messages part of the same conversation have the same id.
+    conversation: uuid.UUID  # messages part of the same conversation have the same id.
     position: int  # position in the conversation.
     content: str  # content initially generated
     role: Role
-    embedding: np.ndarray  # Serialized numpy array.
     trainer: str  # The class that generated this content.
     revision: str = ""  # So that multiple versions can be stored, e.g. postprocessed, model.
     source: Document = None  # The document that helped generated this content, if applicable. For bookkeeping.

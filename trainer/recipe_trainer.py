@@ -4,7 +4,7 @@ from typing import override, AsyncGenerator
 
 import humanize
 
-from model.model import Recipe
+from model.model import Training
 from trainer.trainer import next_variation, main, RecipeTrainerBase
 
 _logger = logging.getLogger(__name__)
@@ -147,7 +147,7 @@ class RecipeTrainer(RecipeTrainerBase):
     async def _secrets(self):
         # TODO: Optimize
         secrets = []
-        with self.chat_scope():
+        with self._chat_scope():
             # Maybe redundant with SummarizingTrainer? Probably different enough.
             answer = await self.chat.chat(
                 "Is there a secret, a key technique, or a special ingredient to this recipe that contributes to its success?")
@@ -166,15 +166,16 @@ class RecipeTrainer(RecipeTrainerBase):
                     _logger.info("Generated too many techniques from the recipe.")
 
         if secrets:
-            for message in self._q_and_q_messages(
+            for training in self._q_and_q_training(
                     next_variation(self.Variations.how_to_suceed),
                     await self._prompt(
                         "Summarize, simplify, and improve the wording of the following text:\n\n" + "\n".join(secrets))
             ):
-                yield message
+                yield training
 
     @override
-    async def _process_document(self, recipe: Recipe) -> AsyncGenerator[dict[str, str], None]:
+    async def __aiter__(self) -> AsyncGenerator[Training, None]:
+        recipe = self.input
         if recipe.review_score is None or recipe.review_score < self.MIN_SCORE:
             return
 
@@ -194,24 +195,24 @@ class RecipeTrainer(RecipeTrainerBase):
             "The sentence includes a template marker []. You must substitute the template marker by your answer. "
             "Respond with the completed sentence only.",
             max_tokens=20) + title_variation[1]
-        for message in self._q_and_q_messages(title, repr(recipe)):
-            yield message
-        for message in self._q_and_q_messages(next_variation(self.Variations.give_nutrition),
-                                              recipe.format_nutrition()):
-            yield message
+        for training in self._q_and_q_training(title, repr(recipe)):
+            yield training
+        for training in self._q_and_q_training(next_variation(self.Variations.give_nutrition),
+                                               recipe.format_nutrition()):
+            yield training
 
         if recipe.cuisine:
-            for message in self._q_and_q_messages(
+            for training in self._q_and_q_training(
                     next_variation(self.Variations.which_cuisine),
                     # TODO: prompt: Write a sentence that briefly answers the question considering the answer is {}.
                     next_variation(self.Variations.cuisine_answer) + (", ".join(recipe.cuisine[:-1]) + " and " +
                                                                       recipe.cuisine[-1] if len(recipe.cuisine) > 1
                     else recipe.cuisine[0])
             ):
-                yield message
+                yield training
 
         if recipe.category:
-            for message in self._q_and_q_messages(
+            for training in self._q_and_q_training(
                     next_variation(self.Variations.which_category),
                     # TODO: prompt: Write a sentence that briefly answers the question considering the answer is {}.
                     next_variation(self.Variations.category_answer) + (
@@ -220,7 +221,7 @@ class RecipeTrainer(RecipeTrainerBase):
                             else recipe.category[0]
                     ) + "."
             ):
-                yield message
+                yield training
 
         if recipe.prep_time or recipe.total_time:
             if recipe.prep_time and recipe.total_time:
@@ -228,18 +229,16 @@ class RecipeTrainer(RecipeTrainerBase):
                     humanize.naturaldelta(recipe.prep_time),
                     humanize.naturaldelta(recipe.total_time))
             elif recipe.prep_time:
-                time_answer = next_variation(self.Variations.prep_time).format(
-                    humanize.naturaldelta(recipe.prep_time))
+                time_answer = next_variation(self.Variations.prep_time).format(humanize.naturaldelta(recipe.prep_time))
             else:
                 time_answer = next_variation(self.Variations.total_time).format(
                     humanize.naturaldelta(recipe.total_time))
 
-            for message in self._q_and_q_messages(next_variation(self.Variations.how_long_question),
-                                                  time_answer):
-                yield message
+            for training in self._q_and_q_training(next_variation(self.Variations.how_long_question), time_answer):
+                yield training
 
-        async for message in secrets:
-            yield message
+        async for training in secrets:
+            yield training
 
 
 if __name__ == '__main__':

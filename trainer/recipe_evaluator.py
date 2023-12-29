@@ -2,7 +2,7 @@ import logging
 from collections import deque
 from typing import override, AsyncGenerator
 
-from model.model import Recipe
+from model.model import Training
 from trainer.trainer import next_variation, main, RecipeTrainerBase
 
 _logger = logging.getLogger(__name__)
@@ -102,8 +102,10 @@ class RecipeEvaluatorTrainer(RecipeTrainerBase):
         ])
 
     @override
-    async def _process_document(self, recipe: Recipe) -> AsyncGenerator[dict[str, str], None]:
-        if recipe.review_count < self.MIN_REVIEWS:
+    async def __aiter__(self) -> AsyncGenerator[Training, None]:
+        recipe = self.input
+
+        if self.input.review_count < self.MIN_REVIEWS:
             return
 
         intro = {
@@ -111,7 +113,7 @@ class RecipeEvaluatorTrainer(RecipeTrainerBase):
             "content": f"Starting after the line break is a recipe by a food magazine.\n\n{recipe}"
         }
 
-        yield intro
+        yield self._training(intro)
         self.chat.append(intro)
 
         self.chat.append({
@@ -119,19 +121,19 @@ class RecipeEvaluatorTrainer(RecipeTrainerBase):
             "content": f"Starting after the line break are reviews for the recipe.\n\n{recipe.format_reviews()}"
         })
 
-        with self.chat_scope():
+        with self._chat_scope():
             why_good = await self.chat.chat(f"Describe why the recipe should get a score of {recipe.review_score}/5. "
                                             "Act like you never saw the reviews. "
                                             "This means you cannot refer to the reviews, reviewers or users in your response.")
 
-        if recipe.review_score >= self.VERY_GOOD_SCORE_THRESHOLD:
-            for message in self._q_and_q_messages(
+        if self.input.review_score >= self.VERY_GOOD_SCORE_THRESHOLD:
+            for training in self._q_and_q_training(
                     next_variation(self.Variations.looks_good),
-                    next_variation(self.Variations.yes_good).format(recipe.review_score, why_good).strip()):
-                yield message
+                    next_variation(self.Variations.yes_good).format(self.input.review_score, why_good).strip()):
+                yield training
         else:
             critic = ""
-            with self.chat_scope():
+            with self._chat_scope():
                 if await self.chat.chat(
                         "Is there a concensus amongs the reviews that the recipe could be improved in some way?",
                         grammar=self.grammar_yes_no) == "yes":
@@ -139,21 +141,21 @@ class RecipeEvaluatorTrainer(RecipeTrainerBase):
                                                   "Write your response using the recipe as the subject of your sentences. "
                                                   "Act like you never saw the reviews. "
                                                   "This means you cannot refer to the reviews, reviewers or users in your response.")
-            if recipe.review_score < self.BAD_SCORE_THRESHOLD:
-                for message in self._q_and_q_messages(
+            if self.input.review_score < self.BAD_SCORE_THRESHOLD:
+                for training in self._q_and_q_training(
                         next_variation(self.Variations.looks_good),
-                        next_variation(self.Variations.no_good).format(recipe.review_score, why_good).strip()):
-                    yield message
+                        next_variation(self.Variations.no_good).format(self.input.review_score, why_good).strip()):
+                    yield training
             else:
-                for message in self._q_and_q_messages(
+                for training in self._q_and_q_training(
                         next_variation(self.Variations.looks_good),
-                        next_variation(self.Variations.maybe_good).format(recipe.review_score, why_good).strip()):
-                    yield message
+                        next_variation(self.Variations.maybe_good).format(self.input.review_score, why_good).strip()):
+                    yield training
 
             if critic:
-                for message in self._q_and_q_messages(next_variation(self.Variations.how_to_improve),
-                                                      critic):
-                    yield message
+                for training in self._q_and_q_training(next_variation(self.Variations.how_to_improve),
+                                                       critic):
+                    yield training
 
 
 if __name__ == '__main__':

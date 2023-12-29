@@ -1,20 +1,23 @@
 import argparse
 import logging
 
-from anyio import run
+import anyio
+from anyio import run, Semaphore
+from tqdm import tqdm
 
-from ai.engine import ExLlama, LlamaCppServer
+from ai.engine import ExLlama, LlamaCppPython
 from db.db import SQLitePipeline
-from finetuning.finetuning import Finetuning
 from indexer.indexer import Indexer
 from spider.spider import start as spider_start
 from trainer.recipe_evaluator import RecipeEvaluatorTrainer
 from trainer.recipe_trainer import RecipeTrainer
 from trainer.summarizing_trainer import SummarizingTrainer
+from utils.aenumerate import aenumerate
 
 _logger = logging.getLogger(__name__)
 
 quick = False
+document_parallelism = 12
 
 
 async def main():
@@ -37,14 +40,36 @@ async def main():
 
     _logger.info("Loading LLM")
     if args.model.endswith(".gguf"):
-        llm = LlamaCppServer(model=args.model)
+        llm = LlamaCppPython(model=args.model)
     else:
         llm = ExLlama(model=args.model)
 
+    semaphore = Semaphore(document_parallelism)
+    revision = llm.model_name()
+
     async with llm:
-        for trainer in RecipeEvaluatorTrainer, RecipeTrainer, SummarizingTrainer:
-            _logger.info(f"Starting trainer: {trainer.__name__}")
-            await trainer(llm, sql, limit=quick).start()
+        async with anyio.create_task_group() as tg:
+            for trainer_type in RecipeEvaluatorTrainer, SummarizingTrainer, RecipeTrainer:
+                count = 0
+                _logger.info(f"Starting trainer: {trainer_type.__name__}")
+                with tqdm(total=trainer_type.total_document(sql, revision=revision, quick=quick)) as progress:
+                    async for count, document in aenumerate(trainer_type.document_generator(sql, quick=quick)):
+                        # TODO: Transaction per document
+                        await semaphore.acquire()
+                        trainer = trainer_type(document, llm, revision=revision)
+
+                        async def process():
+                            try:
+                                async for training in trainer:
+                                    sql.insert(training)
+                            except:
+                                _logger.error(f"Failed to process document {document}", exc_info=True)
+                            semaphore.release()
+                            progress.update()
+
+                        tg.start_soon(process)
+                        await anyio.sleep(0)  # yield
+                _logger.info(f"Done with {trainer_type.__name__}. Created {count} trainings.")
 
     _logger.info("Finetuning")
     finetuning = Finetuning(sql)

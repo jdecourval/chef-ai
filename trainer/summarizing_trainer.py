@@ -1,16 +1,15 @@
 import itertools
 import logging
 import re
-from typing import override, Generator, AsyncGenerator
+from typing import override, AsyncGenerator
 
 import numpy as np
-from anyio import create_task_group
+from sentence_transformers import SentenceTransformer
 from sentence_transformers.util import cos_sim
-from tqdm import tqdm
 
+from db.db import SQLitePipeline
 from model.model import Training, Document
 from trainer.trainer import Trainer, main
-from utils.aenumerate import aenumerate
 
 _logger = logging.getLogger(__name__)
 
@@ -18,56 +17,49 @@ _logger = logging.getLogger(__name__)
 class SummarizingTrainer(Trainer):
     # MIN_DOC_SIZE_B = 500  # Largest is 53453, avg is 5667.
     MIN_DOC_SIZE_B = 8000  # This gives 1379 documents which is way more manageable for now.
+    _LIMIT_QUICK = "ORDER BY RANDOM() LIMIT 50"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.log = open("summarizing_trainer.log", "w")
-        self.grammar_knowledge = self._llm.get_options_grammar(["anecdotes", "story", "knowledge"])
+        self.grammar_knowledge = self._llm.get_options_grammar(("anecdotes", "story", "knowledge"))
+        self.embed_model = SentenceTransformer('thenlper/gte-large')
 
-    def _documents_without_recipe(self) -> Generator[Document, None, None]:
+    @classmethod
+    @override
+    def total_document(cls, sql: SQLitePipeline, revision, quick=False) -> int:
+        if quick:
+            return 50
         # octet_length is faster for an approximate length.
-        total = next(self._sql.select_one_col("SELECT count(1) as c FROM Document "
-                                              "LEFT OUTER JOIN Recipe ON (Document.id = Recipe.document) "
-                                              "WHERE Recipe.document IS NULL "
-                                              f"AND octet_length(Document.text) > {self.MIN_DOC_SIZE_B}"))
-        for document in tqdm((Document(**i) for i in self._sql.select(
+        return next(sql.select_one_col(
+            "SELECT count(1) as c FROM Document "
+            "LEFT OUTER JOIN Recipe ON Document.id=Recipe.document "
+            "LEFT JOIN Training ON "
+            f"Document.id=Training.source AND trainer='SummarizingTrainer' AND revision='{revision}' "
+            "WHERE Recipe.document IS NULL "
+            f"AND octet_length(Document.text) > {cls.MIN_DOC_SIZE_B}"))
+
+    @classmethod
+    @override
+    async def document_generator(cls, sql: SQLitePipeline, revision: str = None,
+                                 quick=False) -> AsyncGenerator[Document, None]:
+        # For this trainer, only gets article not associated to a recipe. Also skip the ones already done.
+        for document in (Document(**i) for i in sql.select(
                 "SELECT Document.* FROM Document "
-                "LEFT JOIN Recipe ON (Document.id = Recipe.document) "
-                f"WHERE Recipe.document IS NULL "
-                f"AND octet_length(Document.text) > {self.MIN_DOC_SIZE_B} {self._limit}")),
-                             total=total):
+                "LEFT JOIN Recipe ON Document.id=Recipe.document "
+                "LEFT JOIN Training ON Document.id=Training.source AND trainer=? AND revision=? "
+                f"WHERE Recipe.document IS NULL AND Training.source IS NULL "
+                f"AND octet_length(Document.text) > {cls.MIN_DOC_SIZE_B} {cls.LIMIT_QUICK if quick else ''}", (cls.__name__, revision))):
             yield document
 
     @override
     async def __aiter__(self) -> AsyncGenerator[Training, None]:
-        conversation_id = next(self._sql.select_one_col(
-            f"SELECT coalesce(MAX(conversation), 0) FROM Training WHERE trainer='SummarizingTrainer'")) + 1
-        for document in self._documents_without_recipe():
-            if next(self._sql.select_one_col(
-                    "SELECT count(1) FROM Training WHERE source=? AND trainer='SummarizingTrainer' AND revision=?",
-                    (document, self.revision))):
-                _logger.info(f"Skipping over already processed document: {document}")
-                continue
-
-            try:
-                with self.chat_scope():
-                    async for position, conversation in aenumerate(self._process_document(document)):
-                        conversation_id += 1  # TODO: Maybe _process_document should yield full conversations after all.
-                        yield self._training(conversation=conversation,
-                                             conversation_id=conversation_id // 2,
-                                             position=position % 2,  # Assumes _process_document generates many q&a.
-                                             source=document
-                                             )
-            except Exception as e:
-                _logger.exception(f"Failed to process recipe: {document.title}", e)
-
-    async def _process_document(self, doc: Document) -> AsyncGenerator[dict[str, str], None]:
         self.chat.append({
             "role": "user",  # Using system breaks the next prompt.
-            "content": "Starting after the line break is an ARTICLE by a food magazine.\n\n" + doc.text
+            "content": "Starting after the line break is an ARTICLE by a food magazine.\n\n" + self.input.text
         })
 
-        with self.chat_scope():
+        with self._chat_scope():
             if await self.chat.chat(
                     "Does the ARTICLE talks of anecdotes, does it tell a story, or is it about culinary knowledge? "
                     "Your answer must be one word: 'anecdotes', 'story' or 'knowledge'.",
@@ -76,7 +68,7 @@ class SummarizingTrainer(Trainer):
                 return
 
         # TODO: Use grammar
-        with self.chat_scope():
+        with self._chat_scope():
             questions = [re.match(r"[\d.-]* (.*)", i)[1] for i in itertools.filterfalse(
                 lambda line: re.search(r"in the recipe|article|this|that|these|those|author|her|his", line),
                 (await self.chat.chat(
@@ -93,13 +85,11 @@ class SummarizingTrainer(Trainer):
                 embeddings = self.embed_model.encode(questions, show_progress_bar=False, normalize_embeddings=True)
                 mean = np.mean(embeddings, axis=0)
                 entropy = sorted(((i[0], cos_sim(i[1], mean)) for i in enumerate(embeddings)), key=lambda x: x[1])
-                _logger.info(f"Dropped question: {questions[entropy[-1][0]]}")
+                _logger.info(f"Dropped question: {questions[entropy[-1][0]]}, over: {questions}")
                 del questions[entropy[-1][0]]
 
-        results = []
-
-        async def gen_q_and_a(question):
-            with self.chat_scope():
+        for question in questions:
+            with self._chat_scope():
                 summary = await self.chat.chat(
                     f'Respond, in your own words, not the author\'s, to the question "{question}". '
                     'Act like you never saw the article. '
@@ -108,15 +98,10 @@ class SummarizingTrainer(Trainer):
                     f'These words are banned from your response: author, article. ',
                     max_tokens=2000)
 
-                results.extend(self._q_and_q_messages(question, summary))
-
-        async with create_task_group() as tg:
-            for question in questions:
-                tg.start_soon(gen_q_and_a, question)
-
-        for result in results:
-            yield result
+                for training in self._q_and_q_training(question, summary):
+                    self._new_conversation()
+                    yield training
 
 
 if __name__ == '__main__':
-    main(SummarizingTrainer, None, False)
+    main(SummarizingTrainer)
