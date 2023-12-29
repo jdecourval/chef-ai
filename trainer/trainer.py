@@ -159,7 +159,7 @@ class RecipeTrainerBase(Trainer, ABC):
             yield recipe
 
 
-def main(trainer_type: Type[Trainer], revision="", limit=False):
+def main(trainer_type: Type[Trainer], revision="quick-test", limit=True):
     import logging
     import argparse
     from db.db import SQLitePipeline
