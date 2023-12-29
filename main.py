@@ -50,29 +50,30 @@ async def main():
     semaphore = Semaphore(document_parallelism)
     revision = llm.model_name()
 
-    async with llm:
-        async with anyio.create_task_group() as tg:
-            for trainer_type in RecipeEvaluatorTrainer, SummarizingTrainer, RecipeTrainer:
-                count = 0
-                _logger.info(f"Starting trainer: {trainer_type.__name__}")
-                with tqdm(total=trainer_type.total_document(sql, revision=revision, quick=quick)) as progress:
-                    async for count, document in aenumerate(trainer_type.document_generator(sql, quick=quick)):
-                        # TODO: Transaction per document
-                        await semaphore.acquire()
-                        trainer = trainer_type(document, llm, revision=revision, embed_model=embed_model)
+    async with llm, anyio.create_task_group() as tg:
+        for trainer_type in RecipeEvaluatorTrainer, SummarizingTrainer, RecipeTrainer:
+            count = 0
+            _logger.info(f"Starting trainer: {trainer_type.__name__}")
+            with tqdm(total=trainer_type.total_document(sql, revision=revision, quick=quick)) as progress:
+                async for count, document in aenumerate(trainer_type.document_generator(sql, quick=quick)):
+                    await semaphore.acquire()
+                    trainer = trainer_type(document, llm, revision=revision, embed_model=embed_model)
 
-                        async def process():
-                            try:
-                                async for training in trainer:
-                                    sql.insert(training)
-                            except:
-                                _logger.error(f"Failed to process document {document}", exc_info=True)
-                            semaphore.release()
-                            progress.update()
+                    async def process():
+                        try:
+                            # Accumulating trainings could be avoided if sqlite supported concurrent writer transactions
+                            trainings = [training async for training in trainer]
+                            with sql.transaction() as transaction:
+                                for training in trainings:
+                                    sql.insert(training, transaction)
+                        except:
+                            _logger.error(f"Failed to process document {document}", exc_info=True)
+                        semaphore.release()
+                        progress.update()
 
-                        tg.start_soon(process)
-                        await anyio.sleep(0)  # yield
-                _logger.info(f"Done with {trainer_type.__name__}. Created {count} trainings.")
+                    tg.start_soon(process)
+                    await anyio.sleep(0)  # yield
+            _logger.info(f"Done with {trainer_type.__name__}. Created {count} trainings.")
 
     _logger.info("Finetuning")
     finetuning = Finetuning(sql)

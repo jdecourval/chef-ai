@@ -3,6 +3,7 @@ import datetime
 import json
 import sqlite3
 import uuid
+from contextlib import contextmanager, nullcontext
 from pathlib import PosixPath
 from typing import Any, Generator, Type
 
@@ -27,30 +28,34 @@ class SQLitePipeline:
         sqlite3.register_converter("Role", lambda x: Training.Role(int(x)))  # TODO: Make generic
         sqlite3.register_converter("UUID", lambda x: uuid.UUID(bytes_le=x))
 
+        with self._connection() as connection:
+            self._create_table_from_dataclass(connection, Document)  # TODO: Move out of here to make generic.
+            self._create_table_from_dataclass(connection, Recipe)
+            self._create_table_from_dataclass(connection, Training)
+            # This will help pulling training solutions from the DB in the correct order.
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS training_index ON Training (trainer, conversation, position)")
+
+    @staticmethod
+    def _connection():
         def dict_row_factory(cursor, row):
             fields = [column[0] for column in cursor.description]
             return {key: value for key, value in zip(fields, row)}
 
-        self.connection = sqlite3.connect('results.db', detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
-        self.connection.execute("PRAGMA synchronous = normal")
-        self.connection.execute("PRAGMA journal_mode = WAL")
-        self.connection.execute("PRAGMA foreign_keys = ON")
-        self.connection.autocommit = False
-        self.connection.row_factory = dict_row_factory
+        connection = sqlite3.connect('results.db', detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
+        connection.execute("PRAGMA synchronous = normal")
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.autocommit = False
+        connection.row_factory = dict_row_factory
+        return connection
 
-        with self.connection:
-            self._create_table_from_dataclass(Document)  # TODO: Move out of here to make generic.
-            self._create_table_from_dataclass(Recipe)
-            self._create_table_from_dataclass(Training)
-            # This will help pulling training solutions from the DB in the corect order.
-            self.connection.execute(
-                "CREATE INDEX IF NOT EXISTS training_index ON Training (trainer, conversation, position)")
-
-    def _create_table_from_dataclass(self, dc: Type[dataclasses.dataclass]):
+    @staticmethod
+    def _create_table_from_dataclass(connection, dc: Type[dataclasses.dataclass]):
         fields = ','.join([field_description(field) for field in dataclasses.fields(dc)])
-        self.connection.execute(f"CREATE TABLE IF NOT EXISTS {dc.__name__}({fields})")
+        connection.execute(f"CREATE TABLE IF NOT EXISTS {dc.__name__}({fields})")
 
-    def insert(self, item: DataclassIterableMixin):
+    def insert(self, item: DataclassIterableMixin, connection=None):
         insert = "INSERT INTO {} ({}) VALUES ({}) RETURNING {}".format(
             type(item).__name__,
             ','.join(item.fields_name()),
@@ -58,24 +63,22 @@ class SQLitePipeline:
             item.primary_key_name()
         )
 
-        with self.connection:
-            result = self.connection.execute(insert, item)
+        with (self._connection() if connection is None else nullcontext(connection)) as connection:
+            result = connection.execute(insert, item)
             item.primary_key = result.fetchone()[item.primary_key_name()]
 
-    def select(self, query: str, *args, **kwargs) -> Generator[dict[str, Any], None, None]:
-        with self.connection:
-            # Does this risk leaving the cursor open if the iterator is not fully iterated?
-            for i in self.connection.execute(query, *args, **kwargs):
+    def select(self, query: str, *args, connection=None, **kwargs) -> Generator[dict[str, Any], None, None]:
+        with (self._connection() if connection is None else nullcontext(connection)) as connection:
+            for i in connection.execute(query, *args, **kwargs):
                 yield i
 
-    def select_one_col(self, query: str, *args, **kwargs) -> Generator[Any, None, None]:
-        backup = self.connection.row_factory
-        try:
-            with self.connection:
-                # TODO: Any way to avoid doing this?
-                self.connection.row_factory = lambda cursor, row: row[0]
-                # Does this risk leaving the cursor open if the iterator is not fully iterated?
-                for i in self.connection.execute(query, *args, **kwargs):
-                    yield i
-        finally:
-            self.connection.row_factory = backup
+    def select_one_col(self, query: str, *args, connection=None, **kwargs) -> Generator[Any, None, None]:
+        with (self._connection() if connection is None else nullcontext(connection)) as connection:
+            connection.row_factory = lambda cursor, row: row[0]
+            for i in connection.execute(query, *args, **kwargs):
+                yield i
+
+    @contextmanager
+    def transaction(self):
+        with self._connection() as connection:
+            yield connection
