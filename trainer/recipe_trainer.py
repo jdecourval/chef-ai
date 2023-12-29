@@ -197,9 +197,11 @@ class RecipeTrainer(RecipeTrainerBase):
             max_tokens=20) + title_variation[1]
         for training in self._q_and_q_training(title, repr(recipe)):
             yield training
-        for training in self._q_and_q_training(next_variation(self.Variations.give_nutrition),
-                                               recipe.format_nutrition()):
-            yield training
+
+        if recipe.nutrition:
+            for training in self._q_and_q_training(next_variation(self.Variations.give_nutrition),
+                                                   recipe.format_nutrition()):
+                yield training
 
         if recipe.cuisine:
             for training in self._q_and_q_training(
