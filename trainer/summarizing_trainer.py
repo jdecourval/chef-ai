@@ -9,6 +9,7 @@ from sentence_transformers.util import cos_sim
 from db.db import SQLitePipeline
 from model.model import Training, Document
 from trainer.trainer import Trainer, main
+from utils.generator import first
 
 _logger = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ class SummarizingTrainer(Trainer):
         if quick:
             return 50
         # octet_length is faster for an approximate length.
-        return next(sql.select_one_col(
+        return first(sql.select_one_col(
             "SELECT count(1) as c FROM Document "
             "LEFT OUTER JOIN Recipe ON Document.id=Recipe.document "
             "LEFT JOIN Training ON "

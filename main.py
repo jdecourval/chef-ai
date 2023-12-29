@@ -13,7 +13,7 @@ from spider.spider import start as spider_start
 from trainer.recipe_evaluator import RecipeEvaluatorTrainer
 from trainer.recipe_trainer import RecipeTrainer
 from trainer.summarizing_trainer import SummarizingTrainer
-from utils.aenumerate import aenumerate
+from utils.generator import aenumerate
 
 _logger = logging.getLogger(__name__)
 

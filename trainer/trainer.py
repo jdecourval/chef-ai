@@ -10,6 +10,7 @@ from typing import Type, AsyncGenerator, TypeVar, override
 from ai.engine import LLMEngine
 from db.db import SQLitePipeline
 from model.model import Document, Recipe, Training
+from utils.generator import first
 
 # TODO: Try this model to generate questions: https://huggingface.co/FPHam/Generate_Question_Mistral_7B
 # TODO: Generate content from charts/pictures.
@@ -133,7 +134,7 @@ class RecipeTrainerBase(Trainer, ABC):
     def total_document(cls, sql: SQLitePipeline, revision, quick=False) -> int:
         if quick:
             return 50
-        return next(sql.select_one_col(
+        return first(sql.select_one_col(
             "SELECT count(1) FROM Recipe "
             "INNER JOIN Document on Document.id = Recipe.document "
             "LEFT JOIN Training ON Document.id=Training.source AND Training.trainer=? AND Training.revision=? "
@@ -163,7 +164,7 @@ def main(trainer_type: Type[Trainer], revision="quick-test", limit=True):
     import logging
     import argparse
     from db.db import SQLitePipeline
-    from utils.aenumerate import aenumerate
+    from utils.generator import aenumerate
     from tqdm.asyncio import tqdm
     from ai.engine import LlamaCppPython
     import anyio

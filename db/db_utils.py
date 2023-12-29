@@ -1,5 +1,6 @@
 import dataclasses
-from collections import abc
+
+from utils.generator import first
 
 
 def field_description(field: dataclasses.Field):
@@ -61,7 +62,7 @@ class DataclassIterableMixin:
 
     @classmethod
     def primary_key_field(cls):
-        return next(field for field in dataclasses.fields(cls) if "PRIMARY KEY" in field.metadata)
+        return first(field for field in dataclasses.fields(cls) if "PRIMARY KEY" in field.metadata)
 
     @classmethod
     def primary_key_name(cls):
