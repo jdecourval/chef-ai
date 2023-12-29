@@ -264,14 +264,19 @@ class ExLlama(LLMEngine):
         # TODO: Reuse tokens.
         tokens = self.tokenizer.encode([job["text"] for job in current_jobs + [candidate_job]],
                                        encode_special_tokens=True)
-        if tokens.shape[-1] + current_jobs[0]["settings"].max_tokens > self.max_seq_len:
-            # It's unlikely another job will be small enough to not overflow but big enough for the similarity criterion
-            raise self._WouldOverflow()
         pad_token = self.tokenizer.pad_token_id
         # Compute the ratio of the sum of all front paddings to the total number of tokens.
         worst_pad_ratio = sum(len(list(takewhile(lambda x: x == pad_token, i))) for i in tokens) / tokens.numel()
         # Would be inefficient.
-        return worst_pad_ratio < self.MAX_PAD_PERCENT
+        if worst_pad_ratio > self.MAX_PAD_PERCENT:
+            return False
+
+        # This calculation is taken from exllama's generate_simple.
+        if tokens.shape[-1] + current_jobs[0]["settings"].max_tokens > self.max_seq_len:
+            # It's unlikely another job will be small enough to not overflow but big enough for the similarity criterion
+            raise self._WouldOverflow()
+
+        return True
 
     @override
     @cache
