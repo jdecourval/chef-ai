@@ -137,7 +137,7 @@ class RecipeEvaluatorTrainer(RecipeTrainerBase):
                 if await self.chat.chat(
                         "Is there a concensus amongs the reviews that the recipe could be improved in some way?",
                         grammar=self.grammar_yes_no) == "yes":
-                    critic = await self.chat.chat("Write a paragraph that suggest practical improvements to the recipe."
+                    critic = await self.chat.chat("Write a paragraph that suggest practical improvements to the recipe. "
                                                   "Write your response using the recipe as the subject of your sentences. "
                                                   "Act like you never saw the reviews. "
                                                   "This means you cannot refer to the reviews, reviewers or users in your response.")
