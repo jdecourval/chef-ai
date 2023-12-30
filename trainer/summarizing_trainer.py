@@ -33,11 +33,10 @@ class SummarizingTrainer(Trainer):
         # octet_length is faster for an approximate length.
         return first(sql.select_one_col(
             "SELECT count(1) as c FROM Document "
-            "LEFT OUTER JOIN Recipe ON Document.id=Recipe.document "
-            "LEFT JOIN Training ON "
-            f"Document.id=Training.source AND trainer='SummarizingTrainer' AND revision='{revision}' "
-            "WHERE Recipe.document IS NULL "
-            f"AND octet_length(Document.text) > {cls.MIN_DOC_SIZE_B}"))
+            "LEFT JOIN Recipe ON Document.id=Recipe.document "
+            "LEFT JOIN Training ON Document.id=Training.source AND trainer = ? AND revision = ? "
+            "WHERE Recipe.document IS NULL AND Training.source IS NULL "
+            "AND octet_length(Document.text) > ?", (cls.__name__, revision, cls.MIN_DOC_SIZE_B)))
 
     @classmethod
     @override
@@ -47,9 +46,11 @@ class SummarizingTrainer(Trainer):
         for document in (Document(**i) for i in sql.select(
                 "SELECT Document.* FROM Document "
                 "LEFT JOIN Recipe ON Document.id=Recipe.document "
-                "LEFT JOIN Training ON Document.id=Training.source AND trainer=? AND revision=? "
-                f"WHERE Recipe.document IS NULL AND Training.source IS NULL "
-                f"AND octet_length(Document.text) > {cls.MIN_DOC_SIZE_B} {cls.LIMIT_QUICK if quick else ''}", (cls.__name__, revision))):
+                "LEFT JOIN Training ON Document.id=Training.source AND trainer = ? AND revision = ? "
+                "WHERE Recipe.document IS NULL AND Training.source IS NULL "
+                "AND octet_length(Document.text) > ? " 
+                f"{cls._LIMIT_QUICK if quick else ''} ",
+                (cls.__name__, revision, cls.MIN_DOC_SIZE_B))):
             yield document
 
     @override
