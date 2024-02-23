@@ -83,10 +83,12 @@ class LlamaCppServer(LLMEngine):
         # Make sure the server is ready
         while True:
             try:
-                async with self.llama_client.get("/", timeout=ClientTimeout(connect=600)):
-                    return self
-            except aiohttp.ClientConnectorError:
-                await anyio.sleep(1)
+                async with self.llama_client.get("/health", timeout=ClientTimeout(connect=600)) as resp:
+                    if (await resp.json())["status"] == "ok":
+                        return self
+            except aiohttp.ClientError:
+                pass
+            await anyio.sleep(1)
 
     async def complete(self, text, **kwargs):
         pass
