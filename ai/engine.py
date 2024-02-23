@@ -91,9 +91,10 @@ class LlamaCppServer(LLMEngine):
     async def complete(self, text, **kwargs):
         pass
 
-    async def chat(self, chatlog: list[dict[str, str]], max_tokens=400, **kwargs):
+    async def chat(self, chatlog: list[dict[str, str]], **kwargs):
         async with self.semaphore:
-            async with self.llama_client.post("/v1/chat/completions", json={'messages': chatlog, **kwargs}) as resp:
+            async with self.llama_client.post("/v1/chat/completions",
+                                              json={'messages': chatlog, 'max_tokens': 400, **kwargs}) as resp:
                 return (await resp.json())['choices'][0]['message']
 
     @override
