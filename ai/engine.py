@@ -66,7 +66,8 @@ class LlamaCppServer(LLMEngine):
         parallel = 4
         llama_server = sh.Command('/home/jerome/Prog/online/llama.cpp/build/bin/server')  # TODO: Unhardcode (softcode?)
         self.llama_server = llama_server('--model', model, '--n-gpu-layers', 99, '--ctx_size', n_ctx * parallel,
-                                         '--parallel', parallel, '--cont-batching', _bg=True)
+                                         '--parallel', parallel, '--cont-batching', _bg=True, _out="llamacpp.log",
+                                         _err="llamacpp.err.log")
         self.llama_client = aiohttp.ClientSession(raise_for_status=True, base_url="http://127.0.0.1:8080",
                                                   timeout=ClientTimeout(sock_read=600))
         self.semaphore = anyio.Semaphore(parallel)
