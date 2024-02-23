@@ -17,7 +17,6 @@ class SQLitePipeline:
         sqlite3.register_adapter(dict, json.dumps)
         sqlite3.register_adapter(list, json.dumps)
         sqlite3.register_adapter(datetime.timedelta, lambda x: x.seconds)
-        sqlite3.register_adapter(Document, lambda x: x.primary_key)
         sqlite3.register_adapter(PosixPath, str)
         sqlite3.register_adapter(uuid.UUID, lambda x: x.bytes_le)
 

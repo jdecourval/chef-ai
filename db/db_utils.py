@@ -1,4 +1,5 @@
 import dataclasses
+import sqlite3
 
 from utils.generator import first
 
@@ -51,6 +52,10 @@ class DataclassIterableMixin:
 
     def __len__(self):
         return len(self._fields_values)
+
+    def __conform__(self, protocol):
+        if protocol is sqlite3.PrepareProtocol:
+            return self.primary_key
 
     def fields_name(self):
         return [field.name for field in dataclasses.fields(self) if getattr(self, field.name) is not None]
