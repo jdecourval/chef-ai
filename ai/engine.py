@@ -144,6 +144,7 @@ class ExLlama(LLMEngine):
     def __init__(self, model, n_ctx=16 * 1024):
         super().__init__()
         self.semaphore = anyio.Semaphore(1)  # Not thread safe.
+        self.mistral = False
         config = ExLlamaV2Config()
         config.model_dir = model
         config.max_seq_len = n_ctx  # TODO: 16k is probably too high for Mistral without rope or sliding attention.
@@ -189,13 +190,22 @@ class ExLlama(LLMEngine):
             await self.send_stream.send(job)
             await done.wait()
         # Remove paddings
-        return re.match(r'^(?:<\|im_end\|>)*(.*?)(?:<\|im_end\|>)*$', job["output"], flags=re.DOTALL).group(1)
+        return re.match(f'^(?:{self.tokenizer.pad_token})*(.*?)(?:{self.tokenizer.eos_token})*$', job["output"],
+                        flags=re.DOTALL).group(1)
 
     async def chat(self, chatlog: list[dict[str, str]], **kwargs):
-        prompt = "".join(f"<|im_start|>{i["role"]}\n{i['content']}<|im_end|>\n" for i in chatlog)
-        prompt += "<|im_start|>assistant\n"
+        if self.mistral:
+            prompt = "<s>"
+            for chat in chatlog:
+                if chat["role"] == "user":
+                    prompt += "[INST] " + chat["content"] + "[/INST]"
+                else:
+                    prompt += chat["content"] + "</s>"
+        else:
+            prompt = "".join(f"<|im_start|>{i["role"]}\n{i['content']}<|im_end|>\n" for i in chatlog)
+            prompt += "<|im_start|>assistant\n"
         output = await self.complete(prompt, **kwargs)
-        return {"role": "assistant", "content": output[len(prompt):]}
+        return {"role": "assistant", "content": output[len(prompt):].strip()}
 
     async def run(self):
         gen = partial(self.generator.generate_simple, encode_special_tokens=True, decode_special_tokens=True)
