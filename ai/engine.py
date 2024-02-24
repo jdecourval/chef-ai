@@ -132,8 +132,8 @@ class LlamaCppPython(LLMEngine):
 
 
 class ExLlama(LLMEngine):
-    receive_stream: MemoryObjectReceiveStream[str]
-    send_stream: MemoryObjectSendStream[str]
+    receive_stream: MemoryObjectReceiveStream[dict[str, str]]
+    send_stream: MemoryObjectSendStream[dict[str, str]]
     BATCH_SIZE = 4
     QUEUE_SIZE = BATCH_SIZE * 16
     MAX_PAD_PERCENT = 0.2
