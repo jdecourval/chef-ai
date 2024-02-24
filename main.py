@@ -49,13 +49,15 @@ async def main():
     embed_model = SentenceTransformer('thenlper/gte-large', device='cpu')
     semaphore = Semaphore(document_parallelism)
     revision = llm.model_name()
+    _logger.info(f"Revision: {revision}")
 
     async with llm, anyio.create_task_group() as tg:
         for trainer_type in RecipeEvaluatorTrainer, SummarizingTrainer, RecipeTrainer:
             count = 0
             _logger.info(f"Starting trainer: {trainer_type.__name__}")
             with tqdm(total=trainer_type.total_document(sql, revision=revision, quick=quick)) as progress:
-                async for count, document in aenumerate(trainer_type.document_generator(sql, quick=quick)):
+                async for count, document in aenumerate(
+                        trainer_type.document_generator(sql, quick=quick, revision=revision)):
                     await semaphore.acquire()
                     trainer = trainer_type(document, llm, revision=revision, embed_model=embed_model)
 
@@ -63,9 +65,20 @@ async def main():
                         try:
                             # Accumulating trainings could be avoided if sqlite supported concurrent writer transactions
                             trainings = [training async for training in trainer]
-                            with sql.transaction() as transaction:
-                                for training in trainings:
-                                    sql.insert(training, transaction)
+                            if len(trainings):
+                                with sql.transaction() as transaction:
+                                    for training in trainings:
+                                        sql.insert(training, transaction)
+                            else:
+                                # Some documents will not yield trainings.
+                                # Generate empty trainings for those, so that they are skipped when resuming.
+                                empty_training = Training(conversation=uuid.uuid4(), position=0, content="", role=Training.Role.none,
+                                         trainer=trainer_type.__name__,
+                                         source=document.document if isinstance(document, Recipe) else document,
+                                         revision=revision)
+                                sql.insert(empty_training)
+
+                                pass
                         except:
                             _logger.error(f"Failed to process document {document}", exc_info=True)
                         semaphore.release()

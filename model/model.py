@@ -119,6 +119,7 @@ class Training(DataclassIterableMixin):
         system = 0
         user = 1
         assistant = 2
+        none = 3
 
     conversation: uuid.UUID  # messages part of the same conversation have the same id.
     position: int  # position in the conversation.

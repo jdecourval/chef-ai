@@ -29,7 +29,7 @@ class Finetuning:
                 SELECT json_group_array(json_object(
                     'role', CASE role WHEN 0 THEN 'system' WHEN 1 THEN 'user' ELSE 'assistant' END, 
                     'content', Training.content))
-                FROM (SELECT * FROM Training WHERE revision=? ORDER BY position) as Training 
+                FROM (SELECT * FROM Training WHERE revision=? AND role != 3 ORDER BY position) as Training 
                 GROUP BY conversation, trainer
                 """, (self.revision,)
         ):
