@@ -109,7 +109,8 @@ class LlamaCppServer(LLMEngine):
 class LlamaCppPython(LLMEngine):
     def __init__(self, model, n_ctx=16 * 1024):
         super().__init__()
-        self.llm = Llama(model_path=model, n_gpu_layers=99, n_ctx=n_ctx, chat_format="chatml", verbose=False)
+        self.llm = Llama(model_path=model, n_gpu_layers=99, n_ctx=n_ctx, chat_format="chatml", offload_kqv=True,
+                         verbose=False)
         self.semaphore = anyio.Semaphore(1)  # Not thread safe.
         try:
             self.name = "".join(model.split("/")[-1].split(".")[:-2])
