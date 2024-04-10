@@ -21,7 +21,7 @@ def _save_model(model, tokenizer, to):
         config.write(json.dumps(config_data, indent=2))
 
 
-def _dequantize_model(model, dtype=torch.bfloat16, device="cpu"):
+def _dequantize_model(model, dtype=torch.bfloat16):
     """
     'model': the peftmodel you loaded with qlora.
     'dtype': dtype that the model was trained using
@@ -43,7 +43,6 @@ def _dequantize_model(model, dtype=torch.bfloat16, device="cpu"):
 
                 new_module = torch.nn.Linear(module.in_features, module.out_features, bias=False, dtype=dtype)
                 new_module.weight = torch.nn.Parameter(weights)
-                new_module.to(device=device, dtype=dtype)
 
                 parent, target, target_name = _get_submodules(model, name)
                 setattr(parent, target_name, new_module)
