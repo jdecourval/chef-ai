@@ -70,7 +70,7 @@ class LlamaCppServer(LLMEngine):
                                          _out="llamacpp.log", _err="llamacpp.err.log")
         self.llama_client = aiohttp.ClientSession(raise_for_status=True, base_url="http://127.0.0.1:8080",
                                                   timeout=ClientTimeout(sock_read=600))
-        self.semaphore = anyio.Semaphore(parallel)
+        self.semaphore = anyio.Semaphore(parallel*10)
         try:
             self.name = "".join(model.split("/")[-1].split(".")[:-2])
         except Exception as e:
