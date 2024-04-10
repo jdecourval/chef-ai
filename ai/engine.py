@@ -299,11 +299,20 @@ class ExLlama(LLMEngine):
 
 
 if __name__ == '__main__':
+    import argparse
+
+    logging.basicConfig(level=logging.INFO)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('model')
+    args = parser.parse_args()
+
+
     async def main():
-        async with ExLlama(
-                '/home/jerome/Prog/online/oobabooga_linux/text-generation-webui/models/LoneStriker_OpenHermes-2.5-Mistral-7B-6.0bpw-h6-exl2') as llama:
+        async with LlamaCppServer(args.model) if args.model.endswith(".gguf") else ExLlama(args.model) as llama:
             async def test(query):
-                print(await llama.chat([{"role": "user", "content": query}], max_tokens=10))
+                print(await llama.chat([{"role": "user", "content": query}], max_tokens=1000))
+
+            await test("warmup")
 
             now = time.monotonic()
             # The goal is just to have something long to exercise prompt processing.
@@ -311,12 +320,13 @@ if __name__ == '__main__':
                       "reasonably sure that your answers are correct, otherwise you must respond with 'I am sorry, "
                       "but I don't know the answer to that question.'. ")
             async with anyio.create_task_group() as tg:
-                tg.start_soon(test, prefix + "What is the meaning of life?")
-                tg.start_soon(test, prefix + "What is the meaning of love?")
-                tg.start_soon(test, prefix + "What is the meaning of Breathe, by Pink Floyd?")
-                tg.start_soon(test, prefix + "What is the meaning of Jesus?")
-                tg.start_soon(test, prefix + "What is the meaning of death?")
-                tg.start_soon(test, prefix + "What is the meaning of Easter bunny?")
+                for _ in range(3):
+                    tg.start_soon(test, prefix + "What is the meaning of life?")
+                    tg.start_soon(test, prefix + "What is the meaning of love?")
+                    tg.start_soon(test, prefix + "What is the meaning of Breathe, by Pink Floyd?")
+                    tg.start_soon(test, prefix + "What is the meaning of Jesus?")
+                    tg.start_soon(test, prefix + "What is the meaning of death?")
+                    tg.start_soon(test, prefix + "What is the meaning of Easter bunny?")
 
             print(time.monotonic() - now)
 
