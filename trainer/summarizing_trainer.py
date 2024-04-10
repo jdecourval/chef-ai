@@ -27,26 +27,26 @@ class SummarizingTrainer(Trainer):
 
     @classmethod
     @override
-    def total_document(cls, sql: SQLitePipeline, revision, quick=False) -> int:
+    def total_document(cls, sql: SQLitePipeline, revision: str, quick=False) -> int:
         if quick:
             return 50
         # octet_length is faster for an approximate length.
         return first(sql.select_one_col(
             "SELECT count(1) as c FROM Document "
-            "LEFT JOIN Recipe ON Document.id=Recipe.document "
-            "LEFT JOIN Training ON Document.id=Training.source AND trainer = ? AND revision = ? "
+            "LEFT JOIN Recipe ON Document.id = Recipe.document "
+            "LEFT JOIN Training ON Document.id = Training.source AND trainer = ? AND revision = ? "
             "WHERE Recipe.document IS NULL AND Training.source IS NULL "
             "AND octet_length(Document.text) > ?", (cls.__name__, revision, cls.MIN_DOC_SIZE_B)))
 
     @classmethod
     @override
-    async def document_generator(cls, sql: SQLitePipeline, revision: str = None,
+    async def document_generator(cls, sql: SQLitePipeline, revision: str,
                                  quick=False) -> AsyncGenerator[Document, None]:
         # For this trainer, only gets article not associated to a recipe. Also skip the ones already done.
         for document in (Document(**i) for i in sql.select(
                 "SELECT Document.* FROM Document "
-                "LEFT JOIN Recipe ON Document.id=Recipe.document "
-                "LEFT JOIN Training ON Document.id=Training.source AND trainer = ? AND revision = ? "
+                "LEFT JOIN Recipe ON Document.id = Recipe.document "
+                "LEFT JOIN Training ON Document.id = Training.source AND trainer = ? AND revision = ? "
                 "WHERE Recipe.document IS NULL AND Training.source IS NULL "
                 "AND octet_length(Document.text) > ? " 
                 f"{cls._LIMIT_QUICK if quick else ''} ",

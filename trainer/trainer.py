@@ -82,8 +82,7 @@ class Trainer(ABC):
 
     @classmethod
     @abc.abstractmethod
-    async def document_generator(cls, sql: SQLitePipeline, revision: str = None, quick=False) -> AsyncGenerator[
-        Input, None]:
+    async def document_generator(cls, sql: SQLitePipeline, revision: str, quick=False) -> AsyncGenerator[Input, None]:
         pass
 
     @classmethod
@@ -143,7 +142,7 @@ class RecipeTrainerBase(Trainer, ABC):
 
     @classmethod
     @override
-    async def document_generator(cls, sql: SQLitePipeline, revision: str = None,
+    async def document_generator(cls, sql: SQLitePipeline, revision: str,
                                  quick=False) -> AsyncGenerator[Recipe, None]:
         document_fields = [i.name for i in dataclasses.fields(Document)]
         recipe_fields = [i.name for i in dataclasses.fields(Recipe)]
