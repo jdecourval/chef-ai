@@ -1,14 +1,18 @@
 import argparse
 import logging
+import uuid
 
 import anyio
 from anyio import run, Semaphore
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
-from ai.engine import ExLlama, LlamaCppPython
+from ai.engine import ExLlama, LlamaCppServer
 from db.db import SQLitePipeline
+from finetuning.finetuning import Finetuning
+from finetuning.merge_qlora import merge_lora
 from indexer.indexer import Indexer
+from model.model import Training, Recipe
 from spider.spider import start as spider_start
 from trainer.recipe_evaluator import RecipeEvaluatorTrainer
 from trainer.recipe_trainer import RecipeTrainer
@@ -18,7 +22,8 @@ from utils.generator import aenumerate
 _logger = logging.getLogger(__name__)
 
 quick = False
-document_parallelism = 12
+base_model = 'teknium/OpenHermes-2.5-Mistral-7B'
+document_parallelism = 4
 
 
 async def main():
@@ -30,9 +35,6 @@ async def main():
     _logger.info("Starting spider")
     await spider_start()
 
-    # _logger.info("Starting enrichment")
-    # await spider_enrich()  # Should not be necessary.
-
     _logger.info("Setting up DB")
     sql = SQLitePipeline()
 
@@ -41,7 +43,7 @@ async def main():
 
     _logger.info("Loading LLM")
     if args.model.endswith(".gguf"):
-        llm = LlamaCppPython(model=args.model)
+        llm = LlamaCppServer(model=args.model)
     else:
         llm = ExLlama(model=args.model)
 
@@ -89,14 +91,14 @@ async def main():
             _logger.info(f"Done with {trainer_type.__name__}. Created {count} trainings.")
 
     _logger.info("Finetuning")
-    finetuning = Finetuning(sql)
+    finetuning = Finetuning(sql, "out")
     finetuning.train()
-
-    _logger.info("Dequantizing")
+    finetuning.save("out/final")
 
     _logger.info("Merging LoRA")
-    _logger.info("Converting weights to Llama.cpp")
-    _logger.info("Quantizing")
+    merge_lora(base_model, "out/final", "out/merged", Finetuning.tokenizer(),
+               Finetuning.model_init_kwargs)  # TODO: final is not necessarily to best epoch
+
 
 if __name__ == '__main__':
     run(main)

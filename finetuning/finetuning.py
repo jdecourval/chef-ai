@@ -4,7 +4,7 @@ from typing import Generator
 import torch
 from datasets import Dataset
 from peft import LoraConfig
-from transformers import AutoTokenizer, TrainingArguments, BitsAndBytesConfig, LlamaTokenizer
+from transformers import AutoTokenizer, TrainingArguments, BitsAndBytesConfig
 from trl import SFTTrainer
 
 from db.db import SQLitePipeline
@@ -17,10 +17,22 @@ SYSTEM_PROMPT = {"role": "system", "content":
 class Finetuning:
     modelpath = "teknium/OpenHermes-2.5-Mistral-7B"
     revision = "openhermes-25-mistral-7b-16k"
+    model_init_kwargs = {
+        "quantization_config": BitsAndBytesConfig(
+            load_in_8bit=False,
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True
+        ),
+        "torch_dtype": torch.bfloat16,
+        "low_cpu_mem_usage": True,  # Reduce CPU RAM usage at the cost of slower loading.
+        # "attn_implementation": "flash_attention_2"  # Couldn't make it work at this point.
+    }
 
-    def __init__(self, sql: SQLitePipeline):
+    def __init__(self, sql: SQLitePipeline, working_folder: str = "out"):
         self._sql = sql
-        self.trainer = self._trainer()
+        self.trainer = self._trainer(working_folder)
 
     def _all_trainings(self) -> Generator[dict[str, str], None, None]:
         # For some reason, adding a GROUP BY clause to json_group_array messes up the JSON. Using a subquery instead.
@@ -49,7 +61,7 @@ class Finetuning:
         tokenizer.max_length = 2909 + 10
         return tokenizer
 
-    def _trainer(self) -> SFTTrainer:
+    def _trainer(self, working_folder) -> SFTTrainer:
         tokenizer = self.tokenizer()
 
         # Not very efficient, a generator can't work here since sqlite objects are not pickable.
@@ -68,20 +80,9 @@ class Finetuning:
 
         return SFTTrainer(
             self.modelpath,
-            model_init_kwargs={
-                "quantization_config": BitsAndBytesConfig(
-                    load_in_8bit=False,
-                    load_in_4bit=True,
-                    bnb_4bit_compute_dtype=torch.bfloat16,
-                    bnb_4bit_quant_type="nf4",
-                    bnb_4bit_use_double_quant=True
-                ),
-                "torch_dtype": torch.bfloat16,
-                "low_cpu_mem_usage": True,  # Reduce CPU RAM usage at the cost of slower loading.
-                # "attn_implementation": "flash_attention_2"  # Couldn't make it work at this point.
-            },
+            model_init_kwargs=self.model_init_kwargs,
             args=TrainingArguments(
-                output_dir="out",
+                output_dir=working_folder,
                 per_device_train_batch_size=batch_size,
                 per_device_eval_batch_size=batch_size,
                 evaluation_strategy="steps",
@@ -146,8 +147,10 @@ class Finetuning:
         )
 
     def train(self):
-        self.trainer.train(resume_from_checkpoint=False)
-        self.trainer.save_model(f"{self.trainer.args.output_dir}/final")
+        self.trainer.train(resume_from_checkpoint=True)
+
+    def save(self, output_folder):
+        self.trainer.save_model(output_dir=output_folder)
 
 
 if __name__ == '__main__':
