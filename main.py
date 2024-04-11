@@ -7,11 +7,12 @@ from anyio import run, Semaphore
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
-from ai.engine import ExLlama, LlamaCppServer
 from db.db import SQLitePipeline
 from finetuning.finetuning import Finetuning
 from finetuning.merge_qlora import merge_lora
 from indexer.indexer import Indexer
+from inference.exllama import ExLlama
+from inference.llama_cpp_server import LlamaCppServer
 from model.model import Training, Recipe
 from spider.spider import start as spider_start
 from trainer.recipe_evaluator import RecipeEvaluatorTrainer

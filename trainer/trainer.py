@@ -7,7 +7,7 @@ from collections import deque
 from contextlib import contextmanager
 from typing import Type, AsyncGenerator, TypeVar, override
 
-from ai.engine import LLMEngine
+from inference.engine import LLMEngine
 from db.db import SQLitePipeline
 from model.model import Document, Recipe, Training
 from utils.generator import first
@@ -165,7 +165,7 @@ def main(trainer_type: Type[Trainer], revision="quick-test", limit=True):
     from db.db import SQLitePipeline
     from utils.generator import aenumerate
     from tqdm.asyncio import tqdm
-    from ai.engine import LlamaCppPython
+    from inference.llama_cpp_python import LlamaCppPython
     import anyio
 
     logging.basicConfig(level=logging.INFO)

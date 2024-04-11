@@ -1,135 +1,23 @@
-import abc
 import logging
 import random
 import re
 import sys
-import time
 from functools import partial, cache
 from itertools import takewhile
-from typing import override, TypeVar
+from typing import override
 
-import aiohttp
 import anyio
-import sh
-from aiohttp import ClientTimeout
-from anyio import run, to_thread, EndOfStream
-from anyio.streams.memory import MemoryObjectSendStream, MemoryObjectReceiveStream
+from anyio import to_thread, EndOfStream
+from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
+
 from exllamav2 import ExLlamaV2Config, ExLlamaV2, ExLlamaV2Tokenizer, ExLlamaV2Cache_8bit
 from exllamav2.generator import ExLlamaV2Sampler, ExLlamaV2StreamingGenerator
-from llama_cpp import Llama, LlamaGrammar
 from lmformatenforcer import RegexParser
 from lmformatenforcer.integrations.exllamav2 import ExLlamaV2TokenEnforcerFilter
 
-# TODO: Samplers
-# TODO: CFG
-# TODO: Compression: https://github.com/microsoft/LLMLingua
-
+from inference.engine import LLMEngine
 
 _logger = logging.getLogger(__name__)
-
-
-class LLMEngine:
-    Grammar = TypeVar('Grammar')
-
-    @abc.abstractmethod
-    def __init__(self):
-        self.name = ""
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.aclose()
-
-    async def aclose(self):
-        pass
-
-    @abc.abstractmethod
-    async def complete(self, text: str, **kwargs):
-        pass
-
-    @abc.abstractmethod
-    async def chat(self, chatlog: list[dict[str, str]], **kwargs):
-        pass
-
-    def model_name(self):
-        return self.name
-
-    @abc.abstractmethod
-    def get_options_grammar(self, options: tuple[str, ...]) -> Grammar:
-        pass
-
-
-class LlamaCppServer(LLMEngine):
-    def __init__(self, model, n_ctx=16 * 1024):
-        super().__init__()
-        parallel = 4
-        llama_server = sh.Command('/home/jerome/Prog/online/llama.cpp/build/bin/server')  # TODO: Unhardcode (softcode?)
-        self.llama_server = llama_server('--model', model, '--n-gpu-layers', 99, '--ctx_size', n_ctx * parallel,
-                                         '--parallel', parallel, '--cont-batching', '--cache-type-k', 'q8_0', _bg=True,
-                                         _out="llamacpp.log", _err="llamacpp.err.log")
-        self.llama_client = aiohttp.ClientSession(raise_for_status=True, base_url="http://127.0.0.1:8080",
-                                                  timeout=ClientTimeout(sock_read=600))
-        self.semaphore = anyio.Semaphore(parallel*10)
-        try:
-            self.name = "".join(model.split("/")[-1].split(".")[:-2])
-        except Exception as e:
-            _logger.warning(f"Failed to parse model's name: {e}")
-
-    async def aclose(self):
-        self.llama_server.terminate()
-        await self.llama_client.close()
-
-    async def __aenter__(self):
-        # Make sure the server is ready
-        while True:
-            try:
-                async with self.llama_client.get("/health", timeout=ClientTimeout(connect=600)) as resp:
-                    if (await resp.json())["status"] == "ok":
-                        return self
-            except aiohttp.ClientError:
-                pass
-            await anyio.sleep(1)
-
-    async def complete(self, text, **kwargs):
-        pass
-
-    async def chat(self, chatlog: list[dict[str, str]], **kwargs):
-        async with self.semaphore:
-            async with self.llama_client.post("/v1/chat/completions",
-                                              json={'messages': chatlog, 'max_tokens': 400, **kwargs}) as resp:
-                return (await resp.json())['choices'][0]['message']
-
-    @override
-    @cache
-    def get_options_grammar(self, options: tuple[str, ...]) -> LLMEngine.Grammar:
-        return f"root ::= {' | '.join(f'"{option}"' for option in options)}"
-
-
-class LlamaCppPython(LLMEngine):
-    def __init__(self, model, n_ctx=16 * 1024):
-        super().__init__()
-        self.llm = Llama(model_path=model, n_gpu_layers=99, n_ctx=n_ctx, chat_format="chatml", offload_kqv=True,
-                         verbose=False)
-        self.semaphore = anyio.Semaphore(1)  # Not thread safe.
-        try:
-            self.name = "".join(model.split("/")[-1].split(".")[:-2])
-        except Exception as e:
-            _logger.warning(f"Failed to parse model's name: {e}")
-
-    async def complete(self, text, **kwargs):
-        pass
-
-    async def chat(self, chatlog, **kwargs):
-        gen = partial(self.llm.create_chat_completion, **kwargs)
-        async with self.semaphore:
-            output = await to_thread.run_sync(gen, chatlog)
-        return output['choices'][0]['message']
-
-    @override
-    @cache
-    def get_options_grammar(self, options: tuple[str, ...]) -> LLMEngine.Grammar:
-        return LlamaGrammar.from_string(f"root ::= {' | '.join(f'"{option}"' for option in options)}", verbose=False)
 
 
 class ExLlama(LLMEngine):
@@ -164,6 +52,7 @@ class ExLlama(LLMEngine):
         self.max_seq_len = cache.max_seq_len
         try:
             self.name = model.split("/")[-1].split("_")[-1]
+            # self.name = "".join(model.split("/")[-1].split("_")[1:])
         except Exception as e:
             _logger.warning(f"Failed to parse model's name: {e}")
 
@@ -296,40 +185,3 @@ class ExLlama(LLMEngine):
     @cache
     def get_options_grammar(self, options: tuple[str, ...]) -> LLMEngine.Grammar:
         return ExLlamaV2TokenEnforcerFilter(RegexParser('|'.join(f'({option})' for option in options)), self.tokenizer)
-
-
-if __name__ == '__main__':
-    import argparse
-
-    logging.basicConfig(level=logging.INFO)
-    parser = argparse.ArgumentParser()
-    parser.add_argument('model')
-    args = parser.parse_args()
-
-
-    async def main():
-        async with LlamaCppServer(args.model) if args.model.endswith(".gguf") else ExLlama(args.model) as llama:
-            async def test(query):
-                print(await llama.chat([{"role": "user", "content": query}], max_tokens=1000))
-
-            await test("warmup")
-
-            now = time.monotonic()
-            # The goal is just to have something long to exercise prompt processing.
-            prefix = ("You are a helpful assistant that answers all questions without hesitation. You must be "
-                      "reasonably sure that your answers are correct, otherwise you must respond with 'I am sorry, "
-                      "but I don't know the answer to that question.'. ")
-            async with anyio.create_task_group() as tg:
-                for _ in range(3):
-                    tg.start_soon(test, prefix + "What is the meaning of life?")
-                    tg.start_soon(test, prefix + "What is the meaning of love?")
-                    tg.start_soon(test, prefix + "What is the meaning of Breathe, by Pink Floyd?")
-                    tg.start_soon(test, prefix + "What is the meaning of Jesus?")
-                    tg.start_soon(test, prefix + "What is the meaning of death?")
-                    tg.start_soon(test, prefix + "What is the meaning of Easter bunny?")
-
-            print(time.monotonic() - now)
-
-
-    logging.basicConfig(level=logging.INFO)
-    run(main)
