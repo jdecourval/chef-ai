@@ -21,7 +21,6 @@ class SummarizingTrainer(Trainer):
 
     def __init__(self, *args, embed_model, **kwargs):
         super().__init__(*args, **kwargs)
-        self.log = open("summarizing_trainer.log", "w")
         self.grammar_knowledge = self._llm.get_options_grammar(("anecdotes", "story", "knowledge"))
         self.embed_model = embed_model
 
