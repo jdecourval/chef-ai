@@ -21,9 +21,9 @@ BASE_URL = os.environ["SPIDER_BASE_URL"]
 _logger = logging.getLogger(__name__)
 
 
-def find_related_urls(text: str, session: ClientSession, tg: TaskGroup):
+def find_related_urls(text: bytes, session: ClientSession, tg: TaskGroup):
     urls_found = 0
-    document = parse(StringIO(str(text)))
+    document = parse(StringIO(text.decode()))
     for urls_found, url in enumerate(
             i.get("href") for i in document.xpath('//a[contains(concat(" ", normalize-space(@class), " "), " card ")]')
     ):
@@ -46,7 +46,7 @@ async def download_url(url: str, session: ClientSession, tg: TaskGroup, save=Tru
                 _logger.error(f"{request.status} status with url: {url}")
                 return urls_found
 
-            text = await request.text()
+            text = await request.read()
             urls_found = find_related_urls(text, session, tg)
             if save:
                 _logger.info(f"Saving new document: {url.split('/')[-1]}")
