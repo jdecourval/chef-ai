@@ -91,12 +91,12 @@ async def main():
             _logger.info(f"Done with {trainer_type.__name__}. Created {count} trainings.")
 
     _logger.info("Finetuning")
-    finetuning = Finetuning(sql, "out")
+    finetuning = Finetuning(base_model, revision, sql, "out")
     finetuning.train()
     finetuning.save("out/final")
 
     _logger.info("Merging LoRA")
-    merge_lora(base_model, "out/final", "out/merged", Finetuning.tokenizer(),
+    merge_lora(base_model, "out/final", "out/merged", Finetuning.tokenizer(base_model),
                Finetuning.model_init_kwargs)  # TODO: final is not necessarily to best epoch
 
 

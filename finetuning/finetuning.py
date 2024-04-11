@@ -15,8 +15,6 @@ SYSTEM_PROMPT = {"role": "system", "content":
 
 
 class Finetuning:
-    modelpath = "teknium/OpenHermes-2.5-Mistral-7B"
-    revision = "openhermes-25-mistral-7b-16k"
     model_init_kwargs = {
         "quantization_config": BitsAndBytesConfig(
             load_in_8bit=False,
@@ -30,8 +28,10 @@ class Finetuning:
         # "attn_implementation": "flash_attention_2"  # Couldn't make it work at this point.
     }
 
-    def __init__(self, sql: SQLitePipeline, working_folder: str = "out"):
+    def __init__(self, base_model, revision, sql: SQLitePipeline, working_folder: str = "out"):
         self._sql = sql
+        self.base_model = base_model
+        self.revision = revision
         self.trainer = self._trainer(working_folder)
 
     def _all_trainings(self) -> Generator[dict[str, str], None, None]:
@@ -47,9 +47,9 @@ class Finetuning:
         ):
             yield [SYSTEM_PROMPT] + json.loads(chat)
 
-    @classmethod
-    def tokenizer(cls):
-        tokenizer = AutoTokenizer.from_pretrained(cls.modelpath, use_fast=True)
+    @staticmethod
+    def tokenizer(base_model):
+        tokenizer = AutoTokenizer.from_pretrained(base_model, use_fast=True)
         # SFTTrainer warns to set this.
         tokenizer.padding_side = 'right'
         # https://stackoverflow.com/questions/76446228/setting-padding-token-as-eos-token-when-using-datacollatorforlanguagemodeling-fr
@@ -62,7 +62,7 @@ class Finetuning:
         return tokenizer
 
     def _trainer(self, working_folder) -> SFTTrainer:
-        tokenizer = self.tokenizer()
+        tokenizer = self.tokenizer(self.base_model)
 
         # Not very efficient, a generator can't work here since sqlite objects are not pickable.
         dataset = Dataset.from_list([{"text": i} for i in self._all_trainings()]).train_test_split(test_size=0.1)
@@ -79,7 +79,7 @@ class Finetuning:
         steps = 100
 
         return SFTTrainer(
-            self.modelpath,
+            self.base_model,
             model_init_kwargs=self.model_init_kwargs,
             args=TrainingArguments(
                 output_dir=working_folder,
