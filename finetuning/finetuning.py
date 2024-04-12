@@ -155,5 +155,6 @@ class Finetuning:
 
 if __name__ == '__main__':
     sql = SQLitePipeline()
-    tuning = Finetuning(sql)
+    tuning = Finetuning("teknium/OpenHermes-2.5-Mistral-7B",  "test", sql)
     tuning.train()
+    tuning.save("out/final")
