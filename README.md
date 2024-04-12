@@ -8,7 +8,7 @@ For an extra challenge, I used an AMD GPU (7900xtx).
 
 All finetuning steps are demonstrated. The application:
 - Scrapes data sources on the internet.
-- Index that information into a sqlite database.
+- Indexes that information into a sqlite database.
 - Uses llm based subpipelines to generate a chat-formatted dataset from the database.
 - Performs efficient supervised finetuning from the dataset.
 - Merges the resulting LoRA into the base model.
@@ -16,12 +16,20 @@ All finetuning steps are demonstrated. The application:
 To avoid being blamed for scrapping, the source's base url (of the format https://mysource.com) is not included in this repo, and must be specified through the `SPIDER_BASE_URL` environment variable, or [spider.py](spider/spider.py) must be adapted for your own different source. 
 You must figure this out yourself.
 
-To execute, install the requirements and run `main.py` followed by the path to an inference model supported by llama.cpp or exllama. Don't forget to define `SPIDER_BASE_URL` as explained above. To use llama.cpp's server, you must also define the `LLAMACPP_BIN_PATH` environment variable to point to llama.cpp's bin folder.
+To execute, install the requirements plus pytorch, and bitsandbytes and run `main.py` followed by the path to an inference model supported by llama.cpp or exllama. Don't forget to define `SPIDER_BASE_URL` as explained above. To use llama.cpp's server, you must also define the `LLAMACPP_BIN_PATH` environment variable to point to llama.cpp's bin folder.
 Example:
 ```shell
 export SPIDER_BASE_URL="https://redacted.com"
 export LLAMACPP_BIN_PATH="/home/me/llamacpp/bin"
+python -m venv venv
 source venv/bin/activate
+pip install --upgrade --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm6.0
+git clone -b rocm_enabled https://github.com/ROCmSoftwarePlatform/bitsandbytes.git
+cd bitsandbytes
+make hip
+pip install .
+cd -
+pip install -r requirements.txt
 python main.py inference-model.gguf
 ```
 
