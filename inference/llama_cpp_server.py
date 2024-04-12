@@ -17,10 +17,12 @@ class LlamaCppServer(LLMEngine):
     def __init__(self, model, n_ctx=10 * 1024):
         super().__init__()
         parallel = 3  # More than 3, with current settings, cause OOM.
+        quantized_k_cache = False  # Saves a bit of VRAM, but currently result in a token generation slowdown.
         llama_server = sh.Command(f'{os.environ["LLAMACPP_BIN_DIR"]}/server')
         self.llama_server = llama_server('--model', model, '--n-gpu-layers', 99, '--ctx_size', n_ctx * parallel,
-                                         '--parallel', parallel, '--cont-batching', '--cache-type-k', 'q8_0', _bg=True,
-                                         _out="llamacpp.log", _err="llamacpp.err.log")
+                                         '--parallel', parallel, '--cont-batching',
+                                         '--cache-type-k', 'q8_0' if quantized_k_cache else 'f16',
+                                         _bg=True, _out="llamacpp.log", _err="llamacpp.err.log")
         self.llama_client = aiohttp.ClientSession(raise_for_status=True, base_url="http://127.0.0.1:8080",
                                                   timeout=ClientTimeout(sock_read=600))
         self.semaphore = anyio.Semaphore(parallel * 10)
