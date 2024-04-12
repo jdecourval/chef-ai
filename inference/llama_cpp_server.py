@@ -16,7 +16,7 @@ _logger = logging.getLogger(__name__)
 class LlamaCppServer(LLMEngine):
     def __init__(self, model, n_ctx=10 * 1024):
         super().__init__()
-        parallel = 4
+        parallel = 3  # More than 3, with current settings, cause OOM.
         llama_server = sh.Command(f'{os.environ["LLAMACPP_BIN_DIR"]}/server')
         self.llama_server = llama_server('--model', model, '--n-gpu-layers', 99, '--ctx_size', n_ctx * parallel,
                                          '--parallel', parallel, '--cont-batching', '--cache-type-k', 'q8_0', _bg=True,
