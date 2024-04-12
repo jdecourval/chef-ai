@@ -78,7 +78,7 @@ class SummarizingTrainer(Trainer):
                     'These words are banned from your response: author, this, that, these, those, article. '
                     "Now forget about the ARTICLE. "
                     "Each QUESTION in your response must stand independently of the ARTICLE. "
-                    "Remove any QUESTION from your response where it's not the case. ")).splitlines())]
+                    "Remove any QUESTION from your response where it's not the case. ", max_tokens=600)).splitlines())]
 
             # TODO: Pick more questions in larger documents
             while len(questions) > 6:
