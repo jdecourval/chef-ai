@@ -33,7 +33,8 @@ class SQLitePipeline:
             self._create_table_from_dataclass(connection, Training)
             # This will help pulling training solutions from the DB in the correct order.
             connection.execute(
-                "CREATE INDEX IF NOT EXISTS training_index ON Training (trainer, conversation, position)")
+                "CREATE INDEX IF NOT EXISTS training_index ON Training (revision, trainer, conversation, position)")
+            connection.execute("CREATE INDEX IF NOT EXISTS training_index_2 ON Training (revision, trainer, source)")
 
     @staticmethod
     def _connection():
