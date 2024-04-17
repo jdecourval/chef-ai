@@ -57,8 +57,7 @@ class Finetuning:
         # Seems a good idea?
         # https://discuss.huggingface.co/t/what-does-the-parameter-clean-up-tokenization-spaces-do-in-the-tokenizer-decode-function/17399/2
         tokenizer.clean_up_tokenization_spaces = True
-        # 2909 seems to be enough to cover everything. +10 just in case.
-        tokenizer.max_length = 2909 + 10
+        tokenizer.max_length = 6 * 1024
         return tokenizer
 
     def _trainer(self, working_folder) -> SFTTrainer:
@@ -75,7 +74,7 @@ class Finetuning:
         batch_size = 1
         ga_steps = 4
 
-        epochs = 5
+        epochs = 2
         steps = 100
 
         return SFTTrainer(
@@ -104,13 +103,14 @@ class Finetuning:
                 # apex are faster than fused that are faster than basic torch.
                 # https://github.com/pytorch/pytorch/issues/71274
                 # adamw_anyprecision needs torchdistx which is not available for rocm
-                # adamw_torch_npu_fused, adamw_apex_fused and adamw_torch_xla also requires special hardware.
-                optim="adamw_torch_fused",
+                # adamw_torch_npu_fused, adamw_apex_fused and adamw_torch_xla require special hardware.
+                optim="paged_adamw_8bit",
                 learning_rate=0.00005,  # https://arxiv.org/pdf/2309.08859v1.pdf
                 weight_decay=0.001,
                 warmup_ratio=0.03,
                 group_by_length=False,  # Taken care by the SFTTrainer's ConstantLengthDataset
-                fp16=True,  # Reduce memory usage.
+                bf16=True,  # Reduce memory usage.
+                bf16_full_eval=True,
                 ddp_find_unused_parameters=False,
                 # https://arxiv.org/abs/2310.05914
                 neftune_noise_alpha=5,
@@ -126,9 +126,9 @@ class Finetuning:
             peft_config=LoraConfig(
                 # https://medium.com/@drishtisharma96505/comparative-analysis-of-lora-parameters-on-llama-2-with-flash-attention-574b913295d4
                 # https://medium.com/@drishtisharma96505/analyzing-the-impact-of-lora-alpha-on-llama-2-quantized-with-gptq-f01e8e8ed8fd
-                r=64,
-                lora_alpha=16,
-                lora_dropout=0.05,
+                r=128,
+                lora_alpha=128,
+                lora_dropout=0.1,
                 # From QLoRA paper:
                 #  We find that the most critical LoRA hyperparameter is how many LoRA adapters are used in total and
                 #  that LoRA on all linear transformer block layers is required to match full finetuning performance.
@@ -147,10 +147,16 @@ class Finetuning:
         )
 
     def train(self):
-        self.trainer.train(resume_from_checkpoint=True)
+        self.trainer.train(resume_from_checkpoint=False)
 
     def save(self, output_folder):
         self.trainer.save_model(output_dir=output_folder)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        del self.trainer
 
 
 if __name__ == '__main__':
