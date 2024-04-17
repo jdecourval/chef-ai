@@ -38,7 +38,7 @@ async def download_url(url: str, session: ClientSession, tg: TaskGroup, save=Tru
         return urls_found
     try:
         # With mode="xb+", if the resulting file exists already, we won't download again.
-        # This syntax is equivalent with two nested 'with', this means the second one is not called if the first fails.
+        # This syntax behaves like two nested 'with', this means session.get is not called if opening the file fails.
         async with (await aiofile.async_open("results/" + url.split("/")[-1] + ".html", mode="xb+") if save
                     else nullcontext() as file,
                     session.get(url) as request):
