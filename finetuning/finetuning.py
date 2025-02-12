@@ -63,7 +63,7 @@ class Finetuning:
     def _trainer(self, working_folder) -> SFTTrainer:
         tokenizer = self.tokenizer(self.base_model)
 
-        # Not very efficient, a generator can't work here since sqlite objects are not pickable.
+        # Not very efficient, a generator can't work here since sqlite objects are not picklable.
         dataset = Dataset.from_list([{"text": i} for i in self._all_trainings()]).train_test_split(test_size=0.1)
 
         # 4-8 seem to be a good starting value.

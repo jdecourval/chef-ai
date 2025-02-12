@@ -121,7 +121,7 @@ class RecipeEvaluatorTrainer(RecipeTrainerBase):
             "content": f"Starting after the line break are reviews for the recipe.\n\n{recipe.format_reviews()}"
         })
 
-        with self._chat_scope():
+        with self.chat.scope():
             why_good = await self.chat.chat(f"Describe why the recipe should get a score of {recipe.review_score}/5. "
                                             "Act like you never saw the reviews. "
                                             "This means you cannot refer to the reviews, reviewers or users in your response.")
@@ -133,7 +133,7 @@ class RecipeEvaluatorTrainer(RecipeTrainerBase):
                 yield training
         else:
             critic = ""
-            with self._chat_scope():
+            with self.chat.scope():
                 if await self.chat.chat(
                         "Is there a concensus amongs the reviews that the recipe could be improved in some way?",
                         grammar=self.grammar_yes_no) == "yes":

@@ -41,40 +41,13 @@ class CategoryIngredientTrainer:
 
 class Trainer(ABC):
     Input = TypeVar("Input")
-    SYSTEM_PROMPT = ("You are a helpful assistant. Below is an instruction that describes a task. "
-                     "Write a response that appropriately completes the request.")
     _CHAT_DEFAULTS = {"max_tokens": 400, "temperature": 0}
     _LIMIT_QUICK = "ORDER BY RANDOM() LIMIT 50"
-
-    class _ChatScope:
-        def __init__(self, llm: LLMEngine, parent=None):
-            self._chatlog = []
-            self._llm = llm
-            self.parent = parent
-            assert parent is not self
-
-        def __iter__(self):
-            if self.parent is not None:
-                yield from self.parent
-            yield from self._chatlog
-
-        def append(self, message: dict[str, str]):
-            self._chatlog.append(message)
-
-        async def chat(self, prompt: str, **kwargs):
-            _logger.debug(f"Prompting: {prompt}")
-            self._chatlog.append({"role": "user", "content": prompt})
-            # ValueError on prompt too large.
-            message = await self._llm.chat(list(self), **{**Trainer._CHAT_DEFAULTS, **kwargs})
-            _logger.debug(f"Prompt result: {message['content']}")
-            self._chatlog.append(message)
-            return message['content']
 
     def __init__(self, input: Input, llm: LLMEngine, revision: str = "", embed_model=None):
         self._llm = llm
         self.revision = revision
-        self.chat = self._ChatScope(self._llm)
-        self.chat.append({"role": "system", "content": Trainer.SYSTEM_PROMPT})
+        self.chat = Chat()
         self.grammar_yes_no = self._llm.get_options_grammar(("yes", "no"))
         self.input = input
         self._new_conversation()
@@ -94,17 +67,8 @@ class Trainer(ABC):
     async def __aiter__(self) -> AsyncGenerator[Training, None]:
         pass
 
-    @contextmanager
-    def _chat_scope(self):
-        self.chat = Trainer._ChatScope(self._llm, self.chat)
-        yield
-        self.chat = self.chat.parent
-
     async def _prompt(self, prompt: str, **kwargs):
-        return (await self._llm.chat([
-            {"role": "system", "content": self.SYSTEM_PROMPT},
-            {"role": "user", "content": prompt}
-        ], **{**self._CHAT_DEFAULTS, **kwargs}))['content']
+        return Chat(self._llm).chat(prompt, **self._CHAT_DEFAULTS)
 
     def _q_and_q_training(self, question, answer):
         conversation = (self._training({"role": "user", "content": question}),

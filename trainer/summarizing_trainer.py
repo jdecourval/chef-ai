@@ -59,7 +59,7 @@ class SummarizingTrainer(Trainer):
             "content": "Starting after the line break is an ARTICLE by a food magazine.\n\n" + self.input.text
         })
 
-        with self._chat_scope():
+        with self.chat.scope():
             if await self.chat.chat(
                     "Does the ARTICLE talks of anecdotes, does it tell a story, or is it about culinary knowledge? "
                     "Your answer must be one word: 'anecdotes', 'story' or 'knowledge'.",
@@ -68,7 +68,7 @@ class SummarizingTrainer(Trainer):
                 return
 
         # TODO: Use grammar
-        with self._chat_scope():
+        with self.chat.scope():
             questions = [re.match(r"[\d.-]* (.*)", i)[1] for i in itertools.filterfalse(
                 lambda line: re.search(r"in the recipe|article|this|that|these|those|author|her|his", line),
                 (await self.chat.chat(
@@ -89,7 +89,7 @@ class SummarizingTrainer(Trainer):
                 del questions[entropy[-1][0]]
 
         for question in questions:
-            with self._chat_scope():
+            with self.chat.scope():
                 summary = await self.chat.chat(
                     f'Respond, in your own words, not the author\'s, to the question "{question}". '
                     'Act like you never saw the article. '

@@ -147,7 +147,7 @@ class RecipeTrainer(RecipeTrainerBase):
     async def _secrets(self):
         # TODO: Optimize
         secrets = []
-        with self._chat_scope():
+        with self.chat.scope():
             # Maybe redundant with SummarizingTrainer? Probably different enough.
             answer = await self.chat.chat(
                 "Is there a secret, a key technique, or a special ingredient to this recipe that contributes to its success?")
